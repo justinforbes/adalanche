@@ -43,6 +43,7 @@ var (
 	AttributeMSDSManagedPasswordId, _     = uuid.FromString("{0e78295a-c6d3-0a40-b491-d62251ffa0a6}")
 	AttributeUserAccountControlGUID, _    = uuid.FromString("{bf967a68-0de6-11d0-a285-00aa003049e2}")
 	AttributePwdLastSetGUID, _            = uuid.FromString("{bf967a0a-0de6-11d0-a285-00aa003049e2}")
+	ExtendedRightApplyGroupPolicy, _      = uuid.FromString("{edacfd8f-ffb3-11d1-b41d-00a0c968f939}")
 
 	ExtendedRightCertificateEnroll, _     = uuid.FromString("{0e10c968-78fb-11d2-90d4-00c04f79dc55}")
 	ExtendedRightCertificateAutoEnroll, _ = uuid.FromString("{a05b8cc2-17bc-4802-a710-e7c15ab866a2}")
@@ -164,6 +165,8 @@ func addMachinesAffectedByGPO(ao *engine.IndexedGraph) {
 			return true
 		}
 
+		computerToken := gpoAccessToken(computer, ao)
+
 		allowEnforcedGPOsOnly := false
 		currentObject := computer
 		var hasparent bool
@@ -225,8 +228,8 @@ func addMachinesAffectedByGPO(ao *engine.IndexedGraph) {
 					continue
 				}
 
-				canRead := true
-				canApply := true
+				canRead := canReadGPO(gpo, computerToken, ao)
+				canApply := canApplyGPO(gpo, computerToken, ao)
 				if canRead && canApply {
 					ao.EdgeTo(gpo, machine, activedirectory.EdgeAffectedByGPO)
 				}
@@ -238,6 +241,51 @@ func addMachinesAffectedByGPO(ao *engine.IndexedGraph) {
 		}
 		return true
 	})
+}
+
+func gpoAccessToken(computer *engine.Node, ao *engine.IndexedGraph) map[windowssecurity.SID]struct{} {
+	token := make(map[windowssecurity.SID]struct{})
+	if sid := computer.SID(); !sid.IsBlank() {
+		token[sid] = struct{}{}
+	}
+
+	ao.EdgeIteratorRecursive(computer, engine.Out, engine.EdgeBitmap{}.Set(activedirectory.EdgeMemberOfGroup), true, func(source, target *engine.Node, edge engine.EdgeBitmap, depth int) bool {
+		if sid := target.SID(); !sid.IsBlank() {
+			token[sid] = struct{}{}
+		}
+		return true
+	})
+
+	return token
+}
+
+func canReadGPO(gpo *engine.Node, token map[windowssecurity.SID]struct{}, ao *engine.IndexedGraph) bool {
+	return tokenHasGPOAccess(gpo, token, ao, uuid.Nil, engine.RIGHT_GENERIC_READ) ||
+		tokenHasGPOAccess(gpo, token, ao, uuid.Nil, engine.RIGHT_DS_READ_PROPERTY) ||
+		tokenHasGPOAccess(gpo, token, ao, uuid.Nil, engine.RIGHT_READ_CONTROL)
+}
+
+func canApplyGPO(gpo *engine.Node, token map[windowssecurity.SID]struct{}, ao *engine.IndexedGraph) bool {
+	return tokenHasGPOAccess(gpo, token, ao, ExtendedRightApplyGroupPolicy, engine.RIGHT_DS_CONTROL_ACCESS) ||
+		tokenHasGPOAccess(gpo, token, ao, uuid.Nil, engine.RIGHT_GENERIC_ALL)
+}
+
+func tokenHasGPOAccess(gpo *engine.Node, token map[windowssecurity.SID]struct{}, ao *engine.IndexedGraph, guid uuid.UUID, mask engine.Mask) bool {
+	sd, err := gpo.SecurityDescriptor()
+	if err != nil || sd == nil {
+		return true
+	}
+
+	for i, acl := range sd.DACL.Entries {
+		if _, ok := token[acl.SID]; !ok {
+			continue
+		}
+		if sd.DACL.IsObjectClassAccessAllowed(i, gpo, mask, guid, ao) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func resolveMemberOfAndMember(ao *engine.IndexedGraph) {

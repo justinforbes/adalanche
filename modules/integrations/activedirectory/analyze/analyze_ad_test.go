@@ -98,10 +98,20 @@ func TestMemberOfResolutionAddsMemberOfGroupEdge(t *testing.T) {
 func TestMachinesAffectedByGPOAddsAffectedByGPOEdge(t *testing.T) {
 	domainSID := mustSID(t, "S-1-5-21-111-222-333")
 	computerSID := mustSID(t, "S-1-5-21-111-222-333-1001")
+	authenticatedUsersSID := windowssecurity.AuthenticatedUsersSID
 
 	gpo := engine.NewNode(
 		engine.Name, "Workstation Policy",
 		engine.DistinguishedName, "CN={11111111-1111-1111-1111-111111111111},CN=Policies,CN=System,DC=example,DC=com",
+	)
+	gpo.Set(engine.NTSecurityDescriptor, engine.NV(securityDescriptorWithACEs(
+		allowACE(authenticatedUsersSID, engine.RIGHT_DS_READ_PROPERTY, uuid.Nil),
+		allowACE(authenticatedUsersSID, engine.RIGHT_DS_CONTROL_ACCESS, ExtendedRightApplyGroupPolicy),
+	)))
+	authenticatedUsers := engine.NewNode(
+		engine.Name, "Authenticated Users",
+		engine.Type, engine.NodeTypeGroup.ValueString(),
+		engine.ObjectSid, authenticatedUsersSID,
 	)
 	ou := engine.NewNode(
 		engine.Name, "Workstations",
@@ -130,7 +140,8 @@ func TestMachinesAffectedByGPOAddsAffectedByGPOEdge(t *testing.T) {
 
 	computer.ChildOf(ou)
 
-	graph := newADTestGraph(gpo, ou, computer, machine)
+	graph := newADTestGraph(gpo, ou, computer, machine, authenticatedUsers)
+	graph.EdgeTo(computer, authenticatedUsers, activedirectory.EdgeMemberOfGroup)
 	if computer.Type() != engine.NodeTypeComputer {
 		t.Fatalf("expected computer type %q, got %q", engine.NodeTypeComputer.String(), computer.Type().String())
 	}
@@ -141,6 +152,108 @@ func TestMachinesAffectedByGPOAddsAffectedByGPOEdge(t *testing.T) {
 	addMachinesAffectedByGPO(graph)
 
 	requireEdgeSet(t, graph, gpo, machine, activedirectory.EdgeAffectedByGPO)
+}
+
+func TestMachinesAffectedByGPORequiresApplyGroupPolicy(t *testing.T) {
+	domainSID := mustSID(t, "S-1-5-21-111-222-333")
+	computerSID := mustSID(t, "S-1-5-21-111-222-333-1001")
+	authenticatedUsersSID := windowssecurity.AuthenticatedUsersSID
+
+	gpo := engine.NewNode(
+		engine.Name, "Read Only Policy",
+		engine.DistinguishedName, "CN={22222222-2222-2222-2222-222222222222},CN=Policies,CN=System,DC=example,DC=com",
+	)
+	gpo.Set(engine.NTSecurityDescriptor, engine.NV(securityDescriptorWithACEs(
+		allowACE(authenticatedUsersSID, engine.RIGHT_DS_READ_PROPERTY, uuid.Nil),
+	)))
+	authenticatedUsers := engine.NewNode(
+		engine.Name, "Authenticated Users",
+		engine.Type, engine.NodeTypeGroup.ValueString(),
+		engine.ObjectSid, authenticatedUsersSID,
+	)
+	ou := engine.NewNode(
+		engine.Name, "Workstations",
+		engine.DistinguishedName, "OU=Workstations,DC=example,DC=com",
+		activedirectory.GPLink, "[LDAP://CN={22222222-2222-2222-2222-222222222222},CN=Policies,CN=System,DC=example,DC=com;0]",
+	)
+	computer := engine.NewNode(
+		engine.Name, "WS01$",
+		engine.Type, engine.NodeTypeComputer.ValueString(),
+		activedirectory.Type, engine.NodeTypeComputer.ValueString(),
+		engine.DistinguishedName, "CN=WS01,OU=Workstations,DC=example,DC=com",
+		engine.ObjectSid, computerSID,
+		engine.DomainContext, "example.com",
+		engine.DataSource, "example",
+	)
+	machine := engine.NewNode(
+		engine.Name, "WS01",
+		engine.Type, ObjectTypeMachine.ValueString(),
+		activedirectory.Type, ObjectTypeMachine.ValueString(),
+		DomainJoinedSID, computerSID,
+		attrs.DomainJoinedSID, computerSID,
+		engine.ObjectSid, domainSID,
+		engine.DomainContext, "example.com",
+		engine.DataSource, "example",
+	)
+
+	computer.ChildOf(ou)
+
+	graph := newADTestGraph(gpo, ou, computer, machine, authenticatedUsers)
+	graph.EdgeTo(computer, authenticatedUsers, activedirectory.EdgeMemberOfGroup)
+	addMachinesAffectedByGPO(graph)
+
+	requireNoEdgeSet(t, graph, gpo, machine, activedirectory.EdgeAffectedByGPO)
+}
+
+func TestMachinesAffectedByGPORequiresReadAccess(t *testing.T) {
+	domainSID := mustSID(t, "S-1-5-21-111-222-333")
+	computerSID := mustSID(t, "S-1-5-21-111-222-333-1001")
+	authenticatedUsersSID := windowssecurity.AuthenticatedUsersSID
+
+	gpo := engine.NewNode(
+		engine.Name, "Apply Only Policy",
+		engine.DistinguishedName, "CN={33333333-3333-3333-3333-333333333333},CN=Policies,CN=System,DC=example,DC=com",
+	)
+	gpo.Set(engine.NTSecurityDescriptor, engine.NV(securityDescriptorWithACEs(
+		allowACE(authenticatedUsersSID, engine.RIGHT_DS_CONTROL_ACCESS, ExtendedRightApplyGroupPolicy),
+	)))
+	authenticatedUsers := engine.NewNode(
+		engine.Name, "Authenticated Users",
+		engine.Type, engine.NodeTypeGroup.ValueString(),
+		engine.ObjectSid, authenticatedUsersSID,
+	)
+	ou := engine.NewNode(
+		engine.Name, "Workstations",
+		engine.DistinguishedName, "OU=Workstations,DC=example,DC=com",
+		activedirectory.GPLink, "[LDAP://CN={33333333-3333-3333-3333-333333333333},CN=Policies,CN=System,DC=example,DC=com;0]",
+	)
+	computer := engine.NewNode(
+		engine.Name, "WS01$",
+		engine.Type, engine.NodeTypeComputer.ValueString(),
+		activedirectory.Type, engine.NodeTypeComputer.ValueString(),
+		engine.DistinguishedName, "CN=WS01,OU=Workstations,DC=example,DC=com",
+		engine.ObjectSid, computerSID,
+		engine.DomainContext, "example.com",
+		engine.DataSource, "example",
+	)
+	machine := engine.NewNode(
+		engine.Name, "WS01",
+		engine.Type, ObjectTypeMachine.ValueString(),
+		activedirectory.Type, ObjectTypeMachine.ValueString(),
+		DomainJoinedSID, computerSID,
+		attrs.DomainJoinedSID, computerSID,
+		engine.ObjectSid, domainSID,
+		engine.DomainContext, "example.com",
+		engine.DataSource, "example",
+	)
+
+	computer.ChildOf(ou)
+
+	graph := newADTestGraph(gpo, ou, computer, machine, authenticatedUsers)
+	graph.EdgeTo(computer, authenticatedUsers, activedirectory.EdgeMemberOfGroup)
+	addMachinesAffectedByGPO(graph)
+
+	requireNoEdgeSet(t, graph, gpo, machine, activedirectory.EdgeAffectedByGPO)
 }
 
 func TestDomainDNSDCSyncProcessorAddsReplicationAndCallEdges(t *testing.T) {
