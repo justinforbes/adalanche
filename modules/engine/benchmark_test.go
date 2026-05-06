@@ -588,6 +588,22 @@ func BenchmarkNodePatchSetApply(b *testing.B) {
 	}
 }
 
+func BenchmarkNodePatchSetSetFlex(b *testing.B) {
+	node := benchmarkNamedNode(1)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		var patch NodePatchSet
+		patch.SetFlex(
+			node,
+			IgnoreBlanks,
+			Description, NV("patched"),
+			Tag, AttributeValues{NV("bench")},
+		)
+	}
+}
+
 func BenchmarkReindexObject(b *testing.B) {
 	graph := NewIndexedGraph()
 	_ = graph.GetIndex(Name)

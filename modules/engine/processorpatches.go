@@ -1,21 +1,25 @@
 package engine
 
+import (
+	"reflect"
+
+	"github.com/lkarlslund/adalanche/modules/ui"
+)
+
 type nodePatchOpKind int
 
 const (
 	nodePatchOpSet nodePatchOpKind = iota
-	nodePatchOpSetFlex
 	nodePatchOpAddTag
 	nodePatchOpClear
 )
 
 type nodePatchOp struct {
-	kind     nodePatchOpKind
-	node     *Node
-	attr     Attribute
-	values   AttributeValues
-	flexInit []any
-	tag      string
+	kind   nodePatchOpKind
+	node   *Node
+	attr   Attribute
+	values AttributeValues
+	tag    string
 }
 
 type NodePatchSet struct {
@@ -32,11 +36,14 @@ func (ps *NodePatchSet) Set(node *Node, attr Attribute, values ...AttributeValue
 }
 
 func (ps *NodePatchSet) SetFlex(node *Node, flexInit ...any) {
-	ps.ops = append(ps.ops, nodePatchOp{
-		kind:     nodePatchOpSetFlex,
-		node:     node,
-		flexInit: append([]any(nil), flexInit...),
-	})
+	for _, patch := range expandFlexInit(flexInit...) {
+		ps.ops = append(ps.ops, nodePatchOp{
+			kind:   nodePatchOpSet,
+			node:   node,
+			attr:   patch.attr,
+			values: patch.values,
+		})
+	}
 }
 
 func (ps *NodePatchSet) AddTag(node *Node, tag string) {
@@ -64,14 +71,109 @@ func (ps *NodePatchSet) Apply(ao *IndexedGraph) {
 		switch op.kind {
 		case nodePatchOpSet:
 			op.node.Set(op.attr, op.values...)
-		case nodePatchOpSetFlex:
-			op.node.SetFlex(op.flexInit...)
 		case nodePatchOpAddTag:
 			op.node.Tag(op.tag)
 		case nodePatchOpClear:
 			op.node.Clear(op.attr)
 		}
 	}
+}
+
+type nodePatchAttrValues struct {
+	attr   Attribute
+	values AttributeValues
+}
+
+func expandFlexInit(flexinit ...any) []nodePatchAttrValues {
+	var (
+		ignoreBlanks bool
+		attribute    = NonExistingAttribute
+		values       AttributeValues
+		patches      []nodePatchAttrValues
+	)
+
+	flush := func() {
+		if attribute == NonExistingAttribute || (ignoreBlanks && len(values) == 0) {
+			return
+		}
+		patches = append(patches, nodePatchAttrValues{
+			attr:   attribute,
+			values: append(AttributeValues(nil), values...),
+		})
+		values = values[:0]
+	}
+
+	for _, item := range flexinit {
+		if item == IgnoreBlanks {
+			ignoreBlanks = true
+			continue
+		}
+		if item == nil || (reflect.ValueOf(item).Kind() == reflect.Ptr && reflect.ValueOf(item).IsNil()) {
+			if ignoreBlanks {
+				continue
+			}
+			ui.Fatal().Msgf("Flex initialization with NIL value")
+		}
+
+		switch value := item.(type) {
+		case *[]string:
+			if value == nil {
+				continue
+			}
+			if ignoreBlanks && len(*value) == 0 {
+				continue
+			}
+			for _, s := range *value {
+				if ignoreBlanks && s == "" {
+					continue
+				}
+				values = append(values, NV(s))
+			}
+		case []string:
+			if ignoreBlanks && len(value) == 0 {
+				continue
+			}
+			for _, s := range value {
+				if ignoreBlanks && s == "" {
+					continue
+				}
+				values = append(values, NV(s))
+			}
+		case []AttributeValue:
+			for _, attrValue := range value {
+				if ignoreBlanks && attrValue.IsZero() {
+					continue
+				}
+				values = append(values, attrValue)
+			}
+		case AttributeValues:
+			for _, attrValue := range value {
+				if ignoreBlanks && attrValue.IsZero() {
+					continue
+				}
+				values = append(values, attrValue)
+			}
+		case Attribute:
+			flush()
+			attribute = value
+		default:
+			if reflect.ValueOf(item).Kind() == reflect.Ptr {
+				item = reflect.ValueOf(item).Elem().Interface()
+			}
+
+			newValue := NV(item)
+			if newValue == nil || (ignoreBlanks && newValue.IsZero()) {
+				if ignoreBlanks {
+					continue
+				}
+				ui.Fatal().Msgf("Flex initialization with NIL value")
+			}
+			values = append(values, newValue)
+		}
+	}
+
+	flush()
+	return patches
 }
 
 type edgeDeltaOpKind int
