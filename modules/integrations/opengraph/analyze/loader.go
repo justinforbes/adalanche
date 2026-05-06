@@ -55,9 +55,7 @@ func (ld *OpenGraphLoader) Init() error {
 				r.Close()
 
 				g := engine.NewLoaderObjects(ld)
-				g.BulkLoadEdges(true)
 				err = processOpenGraphData(g, ogd)
-				g.BulkLoadEdges(false)
 
 				if err != nil {
 					ui.Warn().Msgf("Problem importing collector info: %v", err)

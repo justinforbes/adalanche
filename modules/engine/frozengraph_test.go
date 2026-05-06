@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"sync"
@@ -54,6 +55,16 @@ func compareGraphValuesByID(t *testing.T, got, want map[*Node]int) {
 	}
 }
 
+func collectOutgoingEdges(iterator func(*Node, EdgeDirection, func(*Node, EdgeBitmap) bool), source *Node) []string {
+	edges := make([]string, 0, 16)
+	iterator(source, Out, func(target *Node, ebm EdgeBitmap) bool {
+		edges = append(edges, fmt.Sprintf("%s->%s:%v", source.OneAttrString(Name), target.OneAttrString(Name), ebm.Edges()))
+		return true
+	})
+	slices.Sort(edges)
+	return edges
+}
+
 func TestSyntheticGraphGeneratorIsDeterministic(t *testing.T) {
 	cfg := mediumSyntheticGraphConfig()
 
@@ -93,6 +104,44 @@ func TestFrozenGraphIterateParallelMatchesIndexedGraphIterate(t *testing.T) {
 	want := collectNodeNames(graph.Iterate)
 	if !slices.Equal(got, want) {
 		t.Fatalf("frozen iterate parallel mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestFrozenGraphIterateEdgesMatchesIndexedGraph(t *testing.T) {
+	graph := buildSyntheticGraph(smallSyntheticGraphConfig())
+	view := graph.Freeze()
+
+	var source *Node
+	graph.Iterate(func(node *Node) bool {
+		source = node
+		return false
+	})
+	if source == nil {
+		t.Fatal("expected source node")
+	}
+
+	got := collectOutgoingEdges(view.IterateEdges, source)
+	want := collectOutgoingEdges(graph.IterateEdges, source)
+	if !slices.Equal(got, want) {
+		t.Fatalf("frozen edge iteration mismatch:\n got: %#v\nwant: %#v", got, want)
+	}
+}
+
+func TestFrozenGraphSnapshotIsStableAfterEdgeMutation(t *testing.T) {
+	edge := testEdge("snapshot-edge")
+	from := testNamedNode("from")
+	to := testNamedNode("to")
+	other := testNamedNode("other")
+	graph := testGraph(from, to, other)
+	graph.EdgeToEx(from, to, edge, true)
+
+	view := graph.Freeze()
+	graph.EdgeToEx(from, other, edge, true)
+
+	got := collectOutgoingEdges(view.IterateEdges, from)
+	want := []string{fmt.Sprintf("from->to:%v", EdgeBitmap{}.Set(edge).Edges())}
+	if !slices.Equal(got, want) {
+		t.Fatalf("expected frozen snapshot to remain stable:\n got: %#v\nwant: %#v", got, want)
 	}
 }
 

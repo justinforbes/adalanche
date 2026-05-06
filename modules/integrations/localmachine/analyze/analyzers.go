@@ -10,7 +10,14 @@ import (
 )
 
 func LinkSCCM(ao *engine.IndexedGraph) {
-	ao.Iterate(func(o *engine.Node) bool {
+	view := ao.Freeze()
+	var delta engine.EdgeDelta
+	LinkSCCMProcessor(view, &delta)
+	delta.Apply(ao)
+}
+
+func LinkSCCMProcessor(view *engine.FrozenGraph, out *engine.EdgeDelta) {
+	view.Iterate(func(o *engine.Node) bool {
 		if o.HasAttr(WUServer) || o.HasAttr(SCCMServer) {
 			var hosts []string
 			controltype := "unknown"
@@ -24,13 +31,13 @@ func LinkSCCM(ao *engine.IndexedGraph) {
 
 			for _, host := range hosts {
 				// Try full DNS name
-				servers, found := ao.FindTwoMulti(
+				servers, found := view.FindTwoMulti(
 					DNSHostname, engine.NV(host),
 					engine.Type, engine.NV("Machine"),
 				)
 				// .. or fallback to just the name
 				if !found {
-					servers, found = ao.FindTwoMulti(
+					servers, found = view.FindTwoMulti(
 						engine.Name, engine.NV(host),
 						engine.Type, engine.NV("Machine"),
 					)
@@ -48,7 +55,7 @@ func LinkSCCM(ao *engine.IndexedGraph) {
 					continue
 				}
 				servers.Iterate(func(server *engine.Node) bool {
-					ao.EdgeTo(server, o, EdgeControlsUpdates)
+					out.Add(server, o, EdgeControlsUpdates, false)
 					return true
 				})
 			}
@@ -58,17 +65,17 @@ func LinkSCCM(ao *engine.IndexedGraph) {
 }
 
 func init() {
-	loader.AddProcessor(
-		LinkSCCM,
+	loader.AddEdgeDeltaProcessor(
+		LinkSCCMProcessor,
 		"Link SCCM and WSUS servers to controlled computers",
 		engine.AfterMerge,
 	)
-	loader.AddProcessor(
+	loader.AddEdgeDeltaProcessor(
 
-		func(ao *engine.IndexedGraph) {
+		func(view *engine.FrozenGraph, out *engine.EdgeDelta) {
 			var mut sync.Mutex
 			sids := make(map[windowssecurity.SID][]*engine.Node)
-			ao.IterateParallel(func(o *engine.Node) bool {
+			view.IterateParallel(func(o *engine.Node) bool {
 				if o.Type() != engine.NodeTypeMachine {
 					return true
 				}
@@ -91,7 +98,7 @@ func init() {
 						if i == j {
 							continue
 						}
-						ao.EdgeTo(nodes[i], nodes[j], EdgeSIDCollision)
+						out.Add(nodes[i], nodes[j], EdgeSIDCollision, false)
 					}
 				}
 			}

@@ -199,7 +199,7 @@ func (ld *ADLoader) Close() ([]*engine.IndexedGraph, error) {
 		} else {
 			// Indicate from which domain we saw this if we have the data
 			nb := engine.NV(netbiosname)
-			ao.Iterate(func(o *engine.Node) bool {
+			ao.IterateStable(func(o *engine.Node) bool {
 				o.SetFlex(engine.DataSource, nb)
 				return true
 			})

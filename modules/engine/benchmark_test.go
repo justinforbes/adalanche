@@ -1,6 +1,11 @@
 package engine
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+
+	"github.com/lkarlslund/adalanche/modules/windowssecurity"
+)
 
 func BenchmarkGraphAddNodes(b *testing.B) {
 	b.ReportAllocs()
@@ -30,26 +35,24 @@ func BenchmarkGraphAddEdges(b *testing.B) {
 	}
 }
 
-func BenchmarkGraphBulkLoadEdges(b *testing.B) {
+func BenchmarkEdgeImporterCommit(b *testing.B) {
 	edgeType := testEdge("bench-bulk-edge")
-	graph := NewIndexedGraph()
 	nodes := make([]*Node, 1024)
 	for i := range nodes {
 		nodes[i] = benchmarkNamedNode(i)
-		graph.Add(nodes[i])
 	}
 
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		if !graph.BulkLoadEdges(true) {
-			b.Fatal("expected bulk loading to enable")
+		graph := NewIndexedGraph()
+		for _, node := range nodes {
+			graph.Add(node)
 		}
+		importer := NewEdgeImporter(len(nodes) - 1)
 		for j := 0; j < len(nodes)-1; j++ {
-			graph.EdgeToEx(nodes[j], nodes[j+1], edgeType, true)
+			importer.Add(nodes[j], nodes[j+1], edgeType, true)
 		}
-		if !graph.BulkLoadEdges(false) {
-			b.Fatal("expected bulk loading to disable")
-		}
+		importer.Commit(graph)
 	}
 }
 
@@ -198,6 +201,90 @@ func BenchmarkFindTwoMultiOrAddMiss(b *testing.B) {
 	}
 }
 
+func benchmarkMustSID(value string) windowssecurity.SID {
+	sid, err := windowssecurity.ParseStringSID(value)
+	if err != nil {
+		panic(err)
+	}
+	return sid
+}
+
+func BenchmarkFindOrAddAdjacentSIDFoundUniqueHit(b *testing.B) {
+	graph := NewIndexedGraph()
+	relative := NewNode(
+		Name, NV("relative"),
+		Type, NodeTypeUser.ValueString(),
+		DomainContext, NV("DC=example,DC=com"),
+		DataSource, NV("EXAMPLE"),
+	)
+	graph.Add(relative)
+
+	sid := benchmarkMustSID("S-1-5-21-111-222-333-444")
+	existing := NewNode(
+		Name, NV("existing"),
+		ObjectSid, NV(sid),
+	)
+	graph.Add(existing)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		node, found := graph.FindOrAddAdjacentSIDFound(sid, relative)
+		if !found || node != existing {
+			b.Fatal("expected existing global SID node")
+		}
+	}
+}
+
+func BenchmarkFindOrAddAdjacentSIDFoundMachineScopedHit(b *testing.B) {
+	graph := NewIndexedGraph()
+	machineSID := benchmarkMustSID("S-1-5-21-111-222-333-1000")
+	accountSID := benchmarkMustSID("S-1-5-21-111-222-333-1001")
+	relative := NewNode(
+		Name, NV("machine"),
+		Type, NodeTypeMachine.ValueString(),
+		ObjectSid, NV(machineSID),
+		DataSource, NV("HOST01"),
+	)
+	graph.Add(relative)
+
+	existing := NewNode(
+		Name, NV("existing"),
+		ObjectSid, NV(accountSID),
+		DataSource, NV("HOST01"),
+	)
+	graph.Add(existing)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		node, found := graph.FindOrAddAdjacentSIDFound(accountSID, relative)
+		if !found || node != existing {
+			b.Fatal("expected existing machine-scoped SID node")
+		}
+	}
+}
+
+func BenchmarkFindOrAddAdjacentSIDFoundMiss(b *testing.B) {
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		graph := NewIndexedGraph()
+		relative := NewNode(
+			Name, NV("relative"),
+			Type, NodeTypeUser.ValueString(),
+			DomainContext, NV("DC=example,DC=com"),
+			DataSource, NV("EXAMPLE"),
+		)
+		graph.Add(relative)
+
+		sid := benchmarkMustSID(fmt.Sprintf("S-1-5-21-111-222-333-%d", 1000+i))
+		node, found := graph.FindOrAddAdjacentSIDFound(sid, relative)
+		if found || node == nil {
+			b.Fatal("expected synthetic SID node to be created")
+		}
+	}
+}
+
 func BenchmarkGraphIterate(b *testing.B) {
 	graph := NewIndexedGraph()
 	for i := 0; i < 5000; i++ {
@@ -213,6 +300,36 @@ func BenchmarkGraphIterate(b *testing.B) {
 	}
 }
 
+func BenchmarkGraphIterateStable(b *testing.B) {
+	graph := NewIndexedGraph()
+	for i := 0; i < 5000; i++ {
+		graph.Add(benchmarkNamedNode(i))
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		graph.IterateStable(func(*Node) bool {
+			return true
+		})
+	}
+}
+
+func BenchmarkGraphIterateParallelStable(b *testing.B) {
+	graph := NewIndexedGraph()
+	for i := 0; i < 5000; i++ {
+		graph.Add(benchmarkNamedNode(i))
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		graph.IterateParallelStable(func(*Node) bool {
+			return true
+		}, 0)
+	}
+}
+
 func BenchmarkFrozenGraphIterateLarge(b *testing.B) {
 	graph := buildSyntheticGraph(largeSyntheticGraphConfig())
 	view := graph.Freeze()
@@ -221,6 +338,37 @@ func BenchmarkFrozenGraphIterateLarge(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
 		view.Iterate(func(*Node) bool {
+			return true
+		})
+	}
+}
+
+func BenchmarkFreezeLarge(b *testing.B) {
+	graph := buildSyntheticGraph(largeSyntheticGraphConfig())
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = graph.Freeze()
+	}
+}
+
+func BenchmarkFrozenGraphIterateEdgesLarge(b *testing.B) {
+	graph := buildSyntheticGraph(largeSyntheticGraphConfig())
+	view := graph.Freeze()
+	var source *Node
+	view.Iterate(func(node *Node) bool {
+		source = node
+		return false
+	})
+	if source == nil {
+		b.Fatal("expected source node")
+	}
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		view.IterateEdges(source, Out, func(*Node, EdgeBitmap) bool {
 			return true
 		})
 	}

@@ -126,14 +126,34 @@ func (ed *EdgeDelta) Set(from, to *Node, eb EdgeBitmap, merge bool) {
 }
 
 func (ed *EdgeDelta) Apply(ao *IndexedGraph) {
+	mutations := make([]nodeEdgeMutation, 0, len(ed.ops))
 	for _, op := range ed.ops {
 		switch op.kind {
 		case edgeDeltaOpAdd:
-			ao.EdgeToEx(op.from, op.to, op.edge, op.force)
+			mutations = append(mutations, nodeEdgeMutation{
+				From:  op.from,
+				To:    op.to,
+				Edge:  op.edge,
+				Merge: true,
+				Force: op.force,
+			})
 		case edgeDeltaOpClear:
-			ao.EdgeClear(op.from, op.to, op.edge)
+			mutations = append(mutations, nodeEdgeMutation{
+				From:  op.from,
+				To:    op.to,
+				Edge:  op.edge,
+				Merge: true,
+				Clear: true,
+			})
 		case edgeDeltaOpSet:
-			ao.SetEdge(op.from, op.to, op.edgeBitmap, op.merge)
+			mutations = append(mutations, nodeEdgeMutation{
+				From:       op.from,
+				To:         op.to,
+				Edge:       NonExistingEdge,
+				EdgeBitmap: op.edgeBitmap,
+				Merge:      op.merge,
+			})
 		}
 	}
+	ao.applyIndexedEdgeMutations(ao.resolveEdgeMutations(mutations))
 }

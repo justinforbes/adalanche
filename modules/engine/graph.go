@@ -33,13 +33,8 @@ type IndexedGraph struct {
 	edgeComboLookup map[EdgeBitmap]EdgeCombo
 	edgeCombos      []EdgeBitmap
 	edges           [2]map[NodeIndex]map[NodeIndex]EdgeCombo // from index -> to index -> edgeCombo
-	edgeComboMutex  sync.RWMutex                             // When we're not bulk loading
-
-	bulkloading   bool // If true, we are bulk loading, so defer some operations
-	bulkWorkers   sync.WaitGroup
-	incomingEdges chan BulkEdgeRequest // Channel to receive incoming edges during bulk load
-	flushEdges    chan struct{}        // Channel to request flushing of buffered edges
-	edgeMutex     sync.RWMutex         // When we're not bulk loading
+	edgeComboMutex  sync.RWMutex
+	edgeMutex       sync.RWMutex
 
 	// Lookups
 	indexlock    sync.RWMutex
@@ -72,44 +67,6 @@ func NewIndexedGraph() *IndexedGraph {
 	// }, unique)
 
 	return &g
-}
-
-func (g *IndexedGraph) BulkLoadEdges(enable bool) bool {
-	var result bool
-	g.nodeMutex.Lock()
-	if !g.bulkloading && enable {
-		g.bulkloading = true
-		g.incomingEdges = make(chan BulkEdgeRequest, 32768)
-		g.flushEdges = make(chan struct{}, 5)
-		g.bulkWorkers.Add(1)
-		go g.processIncomingEdges(32768)
-		result = true
-	} else if g.bulkloading && !enable {
-		close(g.incomingEdges)
-		close(g.flushEdges)
-		g.bulkloading = false
-		result = true
-		g.bulkWorkers.Wait()
-	}
-	g.nodeMutex.Unlock()
-	return result
-}
-
-func (g *IndexedGraph) IsBulkLoading() bool {
-	g.nodeMutex.RLock()
-	defer g.nodeMutex.RUnlock()
-	return g.bulkloading
-}
-
-func (g *IndexedGraph) FlushEdges() bool {
-	var result bool
-	g.nodeMutex.Lock()
-	if g.bulkloading {
-		g.flushEdges <- struct{}{}
-		result = true
-	}
-	g.nodeMutex.Unlock()
-	return result
 }
 
 func (os *IndexedGraph) AddDefaultFlex(data ...any) {
@@ -220,7 +177,7 @@ func (os *IndexedGraph) refreshIndex(attribute Attribute, index *Index) {
 	index.init()
 
 	// add all existing stuff to index
-	os.Iterate(func(o *Node) bool {
+	os.IterateStable(func(o *Node) bool {
 		o.Attr(attribute).Iterate(func(value AttributeValue) bool {
 			// Add to index
 			index.Add(value, o, false)
@@ -234,7 +191,7 @@ func (os *IndexedGraph) refreshMultiIndex(attribute, attribute2 Attribute, index
 	index.init()
 
 	// add all existing stuff to index
-	os.Iterate(func(o *Node) bool {
+	os.IterateStable(func(o *Node) bool {
 		if !o.HasAttr(attribute) || !o.HasAttr(attribute2) {
 			return true
 		}
@@ -340,7 +297,7 @@ func AttributeValueToIndex(value AttributeValue) AttributeValue {
 func (os *IndexedGraph) Filter(evaluate func(o *Node) bool) *IndexedGraph {
 	result := NewIndexedGraph()
 
-	os.Iterate(func(n *Node) bool {
+	os.IterateStable(func(n *Node) bool {
 		if evaluate(n) {
 			result.Add(n)
 		}
@@ -559,7 +516,7 @@ func (os *IndexedGraph) Statistics() typestatistics {
 
 func (os *IndexedGraph) AsSlice() NodeSlice {
 	result := NewNodeSlice(os.Order())
-	os.Iterate(func(o *Node) bool {
+	os.IterateStable(func(o *Node) bool {
 		result.Add(o)
 		return true
 	})
@@ -584,6 +541,20 @@ func (os *IndexedGraph) Iterate(each func(o *Node) bool) {
 	os.nodeMutex.RUnlock()
 
 	for _, n := range nodes {
+		if !each(n) {
+			return
+		}
+	}
+}
+
+// IterateStable visits the current node slice without cloning it.
+// The callback must not add or remove nodes from this graph or call methods
+// that require taking nodeMutex for writing.
+func (os *IndexedGraph) IterateStable(each func(o *Node) bool) {
+	os.nodeMutex.RLock()
+	defer os.nodeMutex.RUnlock()
+
+	for _, n := range os.nodes {
 		if !each(n) {
 			return
 		}
@@ -617,6 +588,47 @@ func (os *IndexedGraph) IterateParallel(each func(o *Node) bool, parallelFuncs i
 
 	var i int
 	for _, o := range nodes {
+		if i&0x3ff == 0 && stop.Load() {
+			ui.Debug().Msg("Aborting parallel iterator for Objects")
+			break
+		}
+		queue <- o
+		i++
+	}
+
+	close(queue)
+	wg.Wait()
+}
+
+// IterateParallelStable visits the current node slice in parallel without cloning it.
+// The callback must not add or remove nodes from this graph or call methods
+// that require taking nodeMutex for writing.
+func (os *IndexedGraph) IterateParallelStable(each func(o *Node) bool, parallelFuncs int) {
+	if parallelFuncs == 0 {
+		parallelFuncs = runtime.NumCPU()
+	}
+	os.nodeMutex.RLock()
+	defer os.nodeMutex.RUnlock()
+
+	queue := make(chan *Node, parallelFuncs*2)
+	var wg sync.WaitGroup
+
+	var stop atomic.Bool
+
+	for i := 0; i < parallelFuncs; i++ {
+		wg.Add(1)
+		go func() {
+			for o := range queue {
+				if !each(o) {
+					stop.Store(true)
+				}
+			}
+			wg.Done()
+		}()
+	}
+
+	var i int
+	for _, o := range os.nodes {
 		if i&0x3ff == 0 && stop.Load() {
 			ui.Debug().Msg("Aborting parallel iterator for Objects")
 			break
@@ -813,25 +825,75 @@ func (os *IndexedGraph) FindOrAddAdjacentSID(s windowssecurity.SID, r *Node, fle
 	return sidobject
 }
 
-func (os *IndexedGraph) FindOrAddAdjacentSIDFound(s windowssecurity.SID, relativeTo *Node, flexinit ...any) (*Node, bool) {
+func (os *IndexedGraph) findSIDWithScope(scope Attribute, scopeValue AttributeValue, sidValue AttributeValue) (*Node, bool) {
+	nodes, found := os.GetMultiIndex(ObjectSid, scope).Lookup(sidValue, scopeValue)
+	if !found || nodes.Len() != 1 {
+		return nil, false
+	}
+	return nodes.First(), true
+}
+
+func (os *IndexedGraph) FindAdjacentSID(s windowssecurity.SID, relativeTo *Node) (*Node, bool) {
+	return os.findAdjacentSID(s, relativeTo)
+}
+
+func (os *IndexedGraph) findAdjacentSID(s windowssecurity.SID, relativeTo *Node) (*Node, bool) {
+	sidValue := NV(s)
 	if relativeTo == nil {
-		return os.FindOrAdd(ObjectSid, NV(s))
+		return os.Find(ObjectSid, sidValue)
 	}
 
-	// If it's relative to a computer, then let's see if we can find it (there could be SID collisions across local machines)
-	if relativeTo.Type() == NodeTypeMachine && relativeTo.HasAttr(DataSource) {
-		// Test whether this SID is relative to the computer (this solves problem with machines having the same machine SIDs)
-		if s.StripRID() == relativeTo.SID() {
-			// See if we can find or create it relative to the computer
-			return os.FindTwoOrAdd(ObjectSid, NV(s), DataSource, relativeTo.OneAttr(DataSource))
-		}
+	relativeType := relativeTo.Type()
+	relativeSID := relativeTo.SID()
+	domainContext := relativeTo.OneAttr(DomainContext)
+	dataSource := relativeTo.OneAttr(DataSource)
+
+	if relativeType == NodeTypeMachine && dataSource != nil && s.StripRID() == relativeSID {
+		return os.FindTwo(ObjectSid, sidValue, DataSource, dataSource)
 	}
 
 	if s.Component(2) == 21 && s.Component(3) != 0 {
-		// Let's assume it's not relative to a computer, and therefore truly unique
-		result, found := os.FindMultiOrAdd(ObjectSid, NV(s), func() *Node {
+		result, found := os.FindMulti(ObjectSid, sidValue)
+		if !found || result.Len() != 1 {
+			return nil, false
+		}
+		return result.First(), true
+	}
+
+	if domainContext != nil {
+		if o, found := os.findSIDWithScope(DomainContext, domainContext, sidValue); found {
+			return o, true
+		}
+	}
+
+	if dataSource != nil {
+		if o, found := os.findSIDWithScope(DataSource, dataSource, sidValue); found {
+			return o, true
+		}
+	}
+
+	return os.Find(ObjectSid, sidValue)
+}
+
+func (os *IndexedGraph) FindOrAddAdjacentSIDFound(s windowssecurity.SID, relativeTo *Node, flexinit ...any) (*Node, bool) {
+	if found, ok := os.findAdjacentSID(s, relativeTo); ok {
+		return found, true
+	}
+
+	sidValue := NV(s)
+	if relativeTo == nil {
+		return os.FindOrAdd(ObjectSid, sidValue)
+	}
+
+	dataSource := relativeTo.OneAttr(DataSource)
+	if relativeTo.Type() == NodeTypeMachine && dataSource != nil && s.StripRID() == relativeTo.SID() {
+		return os.FindTwoOrAdd(ObjectSid, sidValue, DataSource, dataSource)
+	}
+
+	if s.Component(2) == 21 && s.Component(3) != 0 {
+		result, found := os.FindMultiOrAdd(ObjectSid, sidValue, func() *Node {
 			no := NewNode(
-				ObjectSid, NV(s),
+				ObjectSid, sidValue,
 			)
 			no.SetFlex(flexinit...)
 			return no
@@ -839,25 +901,10 @@ func (os *IndexedGraph) FindOrAddAdjacentSIDFound(s windowssecurity.SID, relativ
 		return result.First(), found
 	}
 
-	// This is relative to an node that is part of a domain, so lets use that as a lookup reference
-	if relativeTo.HasAttr(DomainContext) {
-		if o, found := os.FindTwoMulti(ObjectSid, NV(s), DomainContext, relativeTo.OneAttr(DomainContext)); found {
-			return o.First(), true
-		}
-	}
-
-	// Use the object's datasource as the relative reference
-	if relativeTo.HasAttr(DataSource) {
-		if o, found := os.FindTwoMulti(ObjectSid, NV(s), DataSource, relativeTo.OneAttr(DataSource)); found {
-			return o.First(), true
-		}
-	}
-
-	// Not found, so fall back to just looking up the SID
-	no, found := os.FindOrAdd(ObjectSid, NV(s),
+	no, found := os.FindOrAdd(ObjectSid, sidValue,
 		IgnoreBlanks,
-		DomainContext, relativeTo.Attr(DomainContext),
-		DataSource, relativeTo.Attr(DataSource),
+		DomainContext, relativeTo.OneAttr(DomainContext),
+		DataSource, dataSource,
 	)
 	return no, found
 }

@@ -9,7 +9,7 @@ import (
 
 func init() {
 	loader.AddProcessor(func(ao *engine.IndexedGraph) {
-		ao.Iterate(func(o *engine.Node) bool {
+		ao.IterateStable(func(o *engine.Node) bool {
 			if o.HasAttr(activedirectory.ObjectSid) && o.HasAttr(engine.DataSource) {
 
 				// We can do this with confidence as everything comes from this loader
@@ -46,13 +46,23 @@ func init() {
 		})
 	}, "Link local users and groups to machines", engine.BeforeMergeLow)
 
-	loader.AddProcessor(func(ao *engine.IndexedGraph) {
+	loader.AddReadOnlyProcessor(func(view *engine.FrozenGraph) {
 		var warns int
 		ln := engine.NV(Loadername)
-		ao.Iterate(func(o *engine.Node) bool {
+		view.Iterate(func(o *engine.Node) bool {
 			if o.HasAttrValue(engine.DataLoader, ln) {
 				if o.HasAttr(activedirectory.ObjectSid) {
-					if ao.Edges(o, engine.Out).Len()+ao.Edges(o, engine.In).Len() == 0 {
+					edgesOut := 0
+					view.IterateEdges(o, engine.Out, func(*engine.Node, engine.EdgeBitmap) bool {
+						edgesOut++
+						return false
+					})
+					edgesIn := 0
+					view.IterateEdges(o, engine.In, func(*engine.Node, engine.EdgeBitmap) bool {
+						edgesIn++
+						return false
+					})
+					if edgesOut+edgesIn == 0 {
 						ui.Debug().Msgf("Object has no graph connections: %v", o.Label())
 					}
 					warns++

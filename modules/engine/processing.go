@@ -36,9 +36,6 @@ func getConflictAttributes() []Attribute {
 func MergeGraphs(graphs []*IndexedGraph) (*IndexedGraph, error) {
 	var largestGraph, largestGraphNodeCount, largestGraphEdgeCount, totalNodes, totalEdges int
 	for i, g := range graphs {
-		// Release the goroutine, so we can GC this
-		g.BulkLoadEdges(false)
-
 		thisGraphNodeCount := g.Order()
 		totalNodes += thisGraphNodeCount
 		thisGraphEdgeCount := g.Size()
@@ -65,7 +62,6 @@ func MergeGraphs(graphs []*IndexedGraph) (*IndexedGraph, error) {
 
 	// Find all the attributes that can be merged objects on
 	superGraph := NewIndexedGraph()
-	superGraph.BulkLoadEdges(true)
 	globalroot := NewNode(
 		Name, NV("Adalanche root node"),
 		Type, NV("Root"),
@@ -151,8 +147,9 @@ func MergeGraphs(graphs []*IndexedGraph) (*IndexedGraph, error) {
 
 	// Add all outgoing edges from the other graphs
 	pb = ui.ProgressBar("Adding edges", int64(totalEdges))
+	importer := NewEdgeImporter(totalEdges)
 	for _, g := range graphs {
-		g.IterateParallel(func(source *Node) bool {
+		g.IterateParallelStable(func(source *Node) bool {
 			g.Edges(source, Out).Iterate(func(target *Node, ebm EdgeBitmap) bool {
 				pb.Add(1)
 				if newSource, merged := mergedNodesMap[source]; merged {
@@ -161,14 +158,14 @@ func MergeGraphs(graphs []*IndexedGraph) (*IndexedGraph, error) {
 				if newTarget, merged := mergedNodesMap[target]; merged {
 					target = newTarget
 				}
-				superGraph.SetEdge(source, target, ebm, true)
+				importer.Set(source, target, ebm, true)
 				return true
 			})
 			return true
 		}, 0)
 	}
 	pb.Finish()
-	superGraph.BulkLoadEdges(false)
+	importer.Commit(superGraph)
 
 	var orphans int
 	processed := make(map[*Node]struct{})

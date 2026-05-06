@@ -4,14 +4,58 @@ import (
 	"runtime"
 	"sync"
 	"sync/atomic"
+
+	"github.com/lkarlslund/adalanche/modules/windowssecurity"
 )
 
+type frozenEdge struct {
+	target NodeIndex
+	edge   EdgeBitmap
+}
+
 type FrozenGraph struct {
-	graph *IndexedGraph
+	graph       *IndexedGraph
+	root        *Node
+	nodes       []*Node
+	nodeIndexes map[*Node]NodeIndex
+	edges       [2][][]frozenEdge
 }
 
 func (g *IndexedGraph) Freeze() *FrozenGraph {
-	return &FrozenGraph{graph: g}
+	fg := &FrozenGraph{graph: g}
+
+	g.nodeMutex.RLock()
+	fg.root = g.root
+	fg.nodes = append([]*Node(nil), g.nodes...)
+	g.nodeMutex.RUnlock()
+
+	fg.nodeIndexes = make(map[*Node]NodeIndex, len(fg.nodes))
+	for i, node := range fg.nodes {
+		fg.nodeIndexes[node] = NodeIndex(i)
+	}
+
+	g.edgeMutex.RLock()
+	g.edgeComboMutex.RLock()
+	for direction := range fg.edges {
+		fg.edges[direction] = make([][]frozenEdge, len(fg.nodes))
+		for from, toMap := range g.edges[direction] {
+			if len(toMap) == 0 {
+				continue
+			}
+			adjacency := make([]frozenEdge, 0, len(toMap))
+			for target, edgeCombo := range toMap {
+				adjacency = append(adjacency, frozenEdge{
+					target: target,
+					edge:   g.edgeCombos[edgeCombo],
+				})
+			}
+			fg.edges[direction][from] = adjacency
+		}
+	}
+	g.edgeComboMutex.RUnlock()
+	g.edgeMutex.RUnlock()
+
+	return fg
 }
 
 func (fg *FrozenGraph) IndexedGraph() *IndexedGraph {
@@ -19,32 +63,25 @@ func (fg *FrozenGraph) IndexedGraph() *IndexedGraph {
 }
 
 func (fg *FrozenGraph) Order() int {
-	return fg.graph.Order()
+	return len(fg.nodes)
 }
 
 func (fg *FrozenGraph) Root() *Node {
-	return fg.graph.Root()
+	return fg.root
 }
 
 func (fg *FrozenGraph) Iterate(each func(o *Node) bool) {
-	fg.graph.nodeMutex.RLock()
-	nodes := fg.graph.nodes
-	for _, n := range nodes {
+	for _, n := range fg.nodes {
 		if !each(n) {
-			fg.graph.nodeMutex.RUnlock()
 			return
 		}
 	}
-	fg.graph.nodeMutex.RUnlock()
 }
 
 func (fg *FrozenGraph) IterateParallel(each func(o *Node) bool, parallelFuncs int) {
 	if parallelFuncs == 0 {
 		parallelFuncs = runtime.NumCPU()
 	}
-
-	fg.graph.nodeMutex.RLock()
-	nodes := fg.graph.nodes
 
 	queue := make(chan *Node, parallelFuncs*2)
 	var wg sync.WaitGroup
@@ -62,14 +99,13 @@ func (fg *FrozenGraph) IterateParallel(each func(o *Node) bool, parallelFuncs in
 		}()
 	}
 
-	for i, o := range nodes {
+	for i, o := range fg.nodes {
 		if i&0x3ff == 0 && stop.Load() {
 			break
 		}
 		queue <- o
 	}
 	close(queue)
-	fg.graph.nodeMutex.RUnlock()
 	wg.Wait()
 }
 
@@ -93,20 +129,23 @@ func (fg *FrozenGraph) DistinguishedParent(o *Node) (*Node, bool) {
 	return fg.graph.DistinguishedParent(o)
 }
 
+func (fg *FrozenGraph) FindAdjacentSID(s windowssecurity.SID, relativeTo *Node) (*Node, bool) {
+	return fg.graph.FindAdjacentSID(s, relativeTo)
+}
+
 func (fg *FrozenGraph) IterateEdges(node *Node, direction EdgeDirection, iter func(target *Node, ebm EdgeBitmap) bool) {
 	if direction > In {
 		return
 	}
 
-	index, ok := fg.graph.nodeLookup.Load(node)
+	index, ok := fg.nodeIndexes[node]
 	if !ok {
 		return
 	}
 
-	for nodeIndex, edgeCombo := range fg.graph.edges[direction][index] {
-		eb := fg.graph.edgeCombos[edgeCombo]
-		target := fg.graph.nodes[nodeIndex]
-		if !iter(target, eb) {
+	for _, edge := range fg.edges[direction][index] {
+		target := fg.nodes[edge.target]
+		if !iter(target, edge.edge) {
 			return
 		}
 	}

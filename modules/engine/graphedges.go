@@ -2,101 +2,9 @@ package engine
 
 import (
 	"math"
-	"sort"
 
 	"github.com/lkarlslund/adalanche/modules/ui"
-	"github.com/lkarlslund/adalanche/modules/windowssecurity"
 )
-
-func (g *IndexedGraph) processIncomingEdges(queuesize int) {
-	bulkProcessBuffer := make([]BulkEdgeRequest, 0, queuesize)
-
-	// continue running while incomingEdges is not closed
-	// add new edges to buffer while there is space
-	// if buffer is full or a signal comes in on flushEdges process buffer
-
-	for {
-		select {
-		case ep, ok := <-g.incomingEdges:
-			if !ok {
-				if len(bulkProcessBuffer) > 0 {
-					g.processBulkEdges(bulkProcessBuffer)
-				}
-				g.bulkWorkers.Done()
-				return
-			}
-			bulkProcessBuffer = append(bulkProcessBuffer, ep)
-
-			if len(bulkProcessBuffer) >= cap(bulkProcessBuffer) {
-				g.processBulkEdges(bulkProcessBuffer)
-				bulkProcessBuffer = bulkProcessBuffer[:0]
-			}
-		case <-g.flushEdges:
-			if len(bulkProcessBuffer) > 0 {
-				g.processBulkEdges(bulkProcessBuffer)
-				bulkProcessBuffer = bulkProcessBuffer[:0]
-			}
-		}
-	}
-}
-
-func (g *IndexedGraph) processBulkEdges(eps []BulkEdgeRequest) {
-	// sort eps by from, to to improve cache locality
-	sort.Slice(eps, func(i, j int) bool {
-		if eps[i].From == eps[j].From {
-			return eps[i].To < eps[j].To
-		}
-		return eps[i].From < eps[j].From
-	})
-
-	var lastFrom, lastTo NodeIndex
-	var lastEdge EdgeBitmap
-
-	g.edgeMutex.Lock()
-	first := true
-	for _, ep := range eps {
-		if ep.From != lastFrom || ep.To != lastTo {
-			if first {
-				first = false
-			} else {
-				// save it
-				g.saveEdge(lastFrom, lastTo, lastEdge, Out)
-				g.saveEdge(lastTo, lastFrom, lastEdge, In)
-			}
-
-			lastFrom = ep.From
-			lastTo = ep.To
-			lastEdge, _ = g.loadEdge(lastFrom, lastTo, Out)
-		}
-		// Modify edge
-		if ep.Edge == NonExistingEdge {
-			// It's a complete bitmap
-			if ep.Clear {
-				lastEdge = lastEdge.Intersect(ep.EdgeBitmap.Invert())
-			} else if ep.Merge {
-				lastEdge = lastEdge.Merge(ep.EdgeBitmap)
-			} else {
-				lastEdge = ep.EdgeBitmap
-			}
-		} else {
-			// Single edge
-			if !ep.Merge {
-				// Makes no sense, but we'll do it anyway
-				lastEdge = EdgeBitmap{}
-			}
-			if ep.Clear {
-				lastEdge = lastEdge.Clear(ep.Edge)
-			} else {
-				lastEdge = lastEdge.Set(ep.Edge)
-			}
-		}
-	}
-	if !first {
-		g.saveEdge(lastFrom, lastTo, lastEdge, Out)
-		g.saveEdge(lastTo, lastFrom, lastEdge, In)
-	}
-	g.edgeMutex.Unlock()
-}
 
 func (g *IndexedGraph) loadEdge(from, to NodeIndex, direction EdgeDirection) (EdgeBitmap, bool) {
 	// Load the edge
@@ -183,59 +91,31 @@ func (g *IndexedGraph) EdgeToEx(from, to *Node, edge Edge, force bool) {
 }
 
 func (g *IndexedGraph) edgeToEx(from, to *Node, edge Edge, force, clear, merge bool) {
-	if from == to {
-		return // Self-loop not supported
-	}
-
-	if !force {
-		fromSid := from.SID()
-
-		// Ignore these, SELF = self own, Creator/Owner always has full rights
-		if fromSid == windowssecurity.SelfSID {
-			return
-		}
-
-		toSid := to.SID()
-		if !fromSid.IsBlank() && fromSid == toSid {
-			return
-		}
-	}
-
-	fromIndex, found := g.nodeLookup.Load(from)
-	if !found {
-		ui.Fatal().Msgf("Node not found in graph")
-	}
-	toIndex, found := g.nodeLookup.Load(to)
-	if !found {
-		ui.Fatal().Msgf("Node not found in graph")
-	}
-
-	if g.bulkloading {
-		// Handle this eventually
-		g.incomingEdges <- BulkEdgeRequest{
-			From:  fromIndex,
-			To:    toIndex,
-			Edge:  edge,
-			Clear: clear,
-			Merge: merge,
-		}
+	op, ok := g.resolveSingleEdgeMutation(nodeEdgeMutation{
+		From:  from,
+		To:    to,
+		Edge:  edge,
+		Merge: merge,
+		Clear: clear,
+		Force: force,
+	})
+	if !ok {
 		return
 	}
 	g.edgeMutex.Lock()
 
-	// normal
 	var ebm EdgeBitmap
-	if merge {
-		ebm, _ = g.loadEdge(fromIndex, toIndex, Out)
+	if op.Merge {
+		ebm, _ = g.loadEdge(op.From, op.To, Out)
 	}
 
-	if clear {
-		ebm = ebm.Clear(edge)
+	if op.Clear {
+		ebm = ebm.Clear(op.Edge)
 	} else {
-		ebm = ebm.Set(edge)
+		ebm = ebm.Set(op.Edge)
 	}
-	g.saveEdge(fromIndex, toIndex, ebm, Out)
-	g.saveEdge(toIndex, fromIndex, ebm, In)
+	g.saveEdge(op.From, op.To, ebm, Out)
+	g.saveEdge(op.To, op.From, ebm, In)
 	g.edgeMutex.Unlock()
 }
 
@@ -253,28 +133,20 @@ func (g *IndexedGraph) GetEdge(from, to *Node) (EdgeBitmap, bool) {
 }
 
 func (g *IndexedGraph) SetEdge(from, to *Node, eb EdgeBitmap, merge bool) {
-	fromIndex, ok := g.nodeLookup.Load(from)
-	toIndex, ok2 := g.nodeLookup.Load(to)
-	if !ok || !ok2 {
-		return
-	}
-	if g.bulkloading {
-		g.incomingEdges <- BulkEdgeRequest{
-			From:       fromIndex,
-			To:         toIndex,
-			Edge:       NonExistingEdge, // Indicate we should process the bitmap
-			EdgeBitmap: eb,
-			Merge:      merge,
-		}
-		return
-	}
+	op := g.resolveBitmapMutation(nodeEdgeMutation{
+		From:       from,
+		To:         to,
+		Edge:       NonExistingEdge,
+		EdgeBitmap: eb,
+		Merge:      merge,
+	})
 	g.edgeMutex.Lock()
-	if merge {
-		oldeb, _ := g.loadEdge(fromIndex, toIndex, Out)
+	if op.Merge {
+		oldeb, _ := g.loadEdge(op.From, op.To, Out)
 		eb = oldeb.Merge(eb)
 	}
-	g.saveEdge(fromIndex, toIndex, eb, Out)
-	g.saveEdge(toIndex, fromIndex, eb, In)
+	g.saveEdge(op.From, op.To, eb, Out)
+	g.saveEdge(op.To, op.From, eb, In)
 	g.edgeMutex.Unlock()
 }
 

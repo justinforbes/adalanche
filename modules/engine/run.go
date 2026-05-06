@@ -68,9 +68,6 @@ func Run(paths ...string) (*IndexedGraph, error) {
 
 		graphsToMerge = append(graphsToMerge, os.Objects)
 
-		// Pimp my performance speedup
-		os.Objects.BulkLoadEdges(true)
-
 		preprocessWG.Add(1)
 		go func(lobj loaderGraphInfo) {
 			var loaderid LoaderID
@@ -85,7 +82,6 @@ func Run(paths ...string) (*IndexedGraph, error) {
 				status := fmt.Sprintf("Preprocessing %v priority %v with %v objects", lobj.Loader.Name(), priority.String(), lobj.Objects.Order())
 				ui.Debug().Msg(status)
 				Process(lobj.Objects, status, loaderid, priority)
-				lobj.Objects.FlushEdges()
 			}
 
 			preprocessWG.Done()
@@ -101,11 +97,6 @@ func Run(paths ...string) (*IndexedGraph, error) {
 	globalGraph, err := MergeGraphs(graphsToMerge)
 	if err != nil {
 		return nil, err
-	}
-
-	// Free background processes so we can get rid of everything
-	for _, g := range graphsToMerge {
-		g.BulkLoadEdges(false)
 	}
 
 	clear(graphsToMerge)
@@ -183,7 +174,6 @@ func PostProcess(ao *IndexedGraph, priority ProcessPriority) {
 
 	// Do global post-processing
 	Process(ao, fmt.Sprintf("Postprocessing priority %v", priority.String()), -1, priority)
-	ao.FlushEdges()
 
 	ui.Info().Msgf("Time to finish post-processing %v", time.Since(starttime))
 }

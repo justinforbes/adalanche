@@ -2,6 +2,7 @@ package engine
 
 import (
 	"fmt"
+	"slices"
 	"sync"
 	"testing"
 )
@@ -127,5 +128,59 @@ func TestIndexedGraphConcurrentAddRelaxedAndIndexReads(t *testing.T) {
 	nodes, found := index.Lookup(NV("node-3-42"))
 	if !found || nodes.Len() != 1 {
 		t.Fatal("expected indexed lookup after concurrent population")
+	}
+}
+
+func TestIndexedGraphIterateStableMatchesIterate(t *testing.T) {
+	graph := NewIndexedGraph()
+	for i := range 16 {
+		graph.Add(testNamedNode(fmt.Sprintf("node-%02d", i)))
+	}
+
+	var want []string
+	graph.Iterate(func(node *Node) bool {
+		want = append(want, node.OneAttrString(Name))
+		return true
+	})
+
+	var got []string
+	graph.IterateStable(func(node *Node) bool {
+		got = append(got, node.OneAttrString(Name))
+		return true
+	})
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("stable iteration mismatch: got %v want %v", got, want)
+	}
+}
+
+func TestIndexedGraphIterateParallelStableMatchesIterate(t *testing.T) {
+	graph := NewIndexedGraph()
+	for i := range 128 {
+		graph.Add(testNamedNode(fmt.Sprintf("node-%03d", i)))
+	}
+
+	var want []string
+	graph.Iterate(func(node *Node) bool {
+		want = append(want, node.OneAttrString(Name))
+		return true
+	})
+	slices.Sort(want)
+
+	results := make(chan string, graph.Order())
+	graph.IterateParallelStable(func(node *Node) bool {
+		results <- node.OneAttrString(Name)
+		return true
+	}, 4)
+	close(results)
+
+	got := make([]string, 0, len(want))
+	for name := range results {
+		got = append(got, name)
+	}
+	slices.Sort(got)
+
+	if !slices.Equal(got, want) {
+		t.Fatalf("stable parallel iteration mismatch: got %v want %v", got, want)
 	}
 }

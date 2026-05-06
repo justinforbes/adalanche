@@ -107,28 +107,21 @@ func TestIndexedGraphSetEdgeOverwriteAndBlankRemoval(t *testing.T) {
 	}
 }
 
-func TestIndexedGraphBulkLoadEdgesFlushesBufferedEdges(t *testing.T) {
+func TestEdgeImporterCommitAppliesBufferedEdges(t *testing.T) {
 	first := testEdge("bulk-first")
 	second := testEdge("bulk-second")
 	from := testNamedNode("from")
 	to := testNamedNode("to")
 	graph := testGraph(from, to)
+	importer := NewEdgeImporter(2)
 
-	if !graph.BulkLoadEdges(true) {
-		t.Fatal("expected bulk load enable to succeed")
-	}
-	graph.EdgeTo(from, to, first)
-	graph.SetEdge(from, to, EdgeBitmap{}.Set(second), true)
-	if !graph.FlushEdges() {
-		t.Fatal("expected flush to succeed while bulk loading")
-	}
-	if !graph.BulkLoadEdges(false) {
-		t.Fatal("expected bulk load disable to succeed")
-	}
+	importer.Add(from, to, first, false)
+	importer.Set(from, to, EdgeBitmap{}.Set(second), true)
+	importer.Commit(graph)
 
 	edge, found := graph.GetEdge(from, to)
 	if !found || !edge.IsSet(first) || !edge.IsSet(second) {
-		t.Fatal("expected buffered bulk edge updates to be flushed")
+		t.Fatal("expected buffered importer edge updates to be applied")
 	}
 }
 

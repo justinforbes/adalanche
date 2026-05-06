@@ -88,17 +88,14 @@ func TestIndexedGraphConcurrentFindTwoMultiOrAddReturnsSingleNode(t *testing.T) 
 	}
 }
 
-func TestIndexedGraphConcurrentBulkLoadAndFlush(t *testing.T) {
+func TestEdgeImporterConcurrentAddAndCommit(t *testing.T) {
 	edgeType := testEdge("bulk-race")
 	nodes := make([]*Node, 0, 64)
 	for i := 0; i < 64; i++ {
 		nodes = append(nodes, testNamedNode(fmt.Sprintf("node-%d", i)))
 	}
 	graph := testGraph(nodes...)
-
-	if !graph.BulkLoadEdges(true) {
-		t.Fatal("expected bulk loading to start")
-	}
+	importer := NewEdgeImporter(len(nodes) * 16)
 
 	var wg sync.WaitGroup
 	for worker := 0; worker < 8; worker++ {
@@ -108,22 +105,16 @@ func TestIndexedGraphConcurrentBulkLoadAndFlush(t *testing.T) {
 			for step := 0; step < 128; step++ {
 				from := nodes[(worker+step)%len(nodes)]
 				to := nodes[(worker+step+1)%len(nodes)]
-				graph.EdgeToEx(from, to, edgeType, true)
-				if step%8 == 0 {
-					graph.FlushEdges()
-				}
+				importer.Add(from, to, edgeType, true)
 			}
 		}(worker)
 	}
 
 	wg.Wait()
-
-	if !graph.BulkLoadEdges(false) {
-		t.Fatal("expected bulk loading to stop")
-	}
+	importer.Commit(graph)
 
 	if graph.Size() == 0 {
-		t.Fatal("expected concurrent bulk loading to produce edges")
+		t.Fatal("expected concurrent importer writes to produce edges")
 	}
 }
 

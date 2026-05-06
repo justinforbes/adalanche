@@ -363,7 +363,7 @@ func addDomainDNSDCSyncEdges(ao *engine.IndexedGraph) {
 }
 
 func addMachinesAffectedByGPO(ao *engine.IndexedGraph) {
-	ao.Iterate(func(machine *engine.Node) bool {
+	ao.IterateStable(func(machine *engine.Node) bool {
 		if machine.Type() != ObjectTypeMachine {
 			return true
 		}
@@ -811,7 +811,7 @@ func init() {
 	}, "Reading local admin passwords via LAPS v2", engine.BeforeMergeFinal)
 
 	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		ao.Iterate(func(o *engine.Node) bool {
+		ao.IterateStable(func(o *engine.Node) bool {
 			if o.Type() == engine.NodeTypeForeignSecurityPrincipal {
 				return true
 			}
@@ -825,25 +825,25 @@ func init() {
 		})
 	}, "Indicator that object inherits security from the container it is within", engine.BeforeMergeFinal)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		ao.Iterate(func(o *engine.Node) bool {
+	LoaderID.AddEdgeDeltaProcessor(func(view *engine.FrozenGraph, out *engine.EdgeDelta) {
+		view.Iterate(func(o *engine.Node) bool {
 			if o.Type() != engine.NodeTypeContainer || o.OneAttrString(engine.Name) != "Machine" {
 				return true
 			}
 			// Only for computers, you can't really pwn users this way
-			p, hasparent := ao.DistinguishedParent(o)
+			p, hasparent := view.DistinguishedParent(o)
 			if !hasparent || p.Type() != engine.NodeTypeGroupPolicyContainer {
 				return true
 			}
-			ao.EdgeTo(p, o, activedirectory.PartOfGPO)
+			out.Add(p, o, activedirectory.PartOfGPO, false)
 			return true
 		})
 	}, "Machine configurations that are part of a GPO", engine.BeforeMergeHigh)
 
 	matchMSOLDescription := regexp.MustCompile(`Account created by Microsoft Azure Active Directory Connect with installation identifier ([0-9a-f]+) running on computer ([^ ]+) configured to synchronize to tenant ([^ ]+)\. `)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		ao.Iterate(func(o *engine.Node) bool {
+	LoaderID.AddEdgeDeltaProcessor(func(view *engine.FrozenGraph, out *engine.EdgeDelta) {
+		view.Iterate(func(o *engine.Node) bool {
 			if o.Type() != engine.NodeTypeUser || !strings.HasPrefix(o.OneAttrString(engine.Name), "MSOL_") {
 				return true
 			}
@@ -857,7 +857,7 @@ func init() {
 			// Extract the first match
 			machineName := string(match[2])
 
-			machine, found := ao.FindTwo(engine.Type, ObjectTypeMachine.ValueString(),
+			machine, found := view.FindTwo(engine.Type, ObjectTypeMachine.ValueString(),
 				engine.Name, engine.NV(machineName))
 
 			if !found {
@@ -865,22 +865,22 @@ func init() {
 				return true
 			}
 
-			ao.EdgeTo(machine, o, EdgeSessionService)
+			out.Add(machine, o, EdgeSessionService, false)
 			return true
 		})
 	}, "Link MSOL_* accounts to computers running it from description", engine.BeforeMergeFinal)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		ao.Iterate(func(o *engine.Node) bool {
+	LoaderID.AddEdgeDeltaProcessor(func(view *engine.FrozenGraph, out *engine.EdgeDelta) {
+		view.Iterate(func(o *engine.Node) bool {
 			if o.Type() != engine.NodeTypeContainer || o.OneAttrString(engine.Name) != "User" {
 				return true
 			}
 			// Only for users, you can't really pwn users this way
-			p, hasparent := ao.DistinguishedParent(o)
+			p, hasparent := view.DistinguishedParent(o)
 			if !hasparent || p.Type() != engine.NodeTypeGroupPolicyContainer {
 				return true
 			}
-			ao.EdgeTo(p, o, activedirectory.PartOfGPO)
+			out.Add(p, o, activedirectory.PartOfGPO, false)
 			return true
 		})
 	}, "User configurations that are part of a GPO", engine.BeforeMergeFinal)
@@ -1067,46 +1067,76 @@ func init() {
 		})
 	}, "Indicator that a group or user can read the msDS-ManagedPasswordId for use in MGSA Golden attack", engine.BeforeMergeFinal)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
+	LoaderID.AddNodePatchProcessor(func(view *engine.FrozenGraph, out *engine.NodePatchSet) {
 		kerberoast := "kerberoast"
-		authusers, found := ao.Find(activedirectory.ObjectSid, engine.NV(windowssecurity.AuthenticatedUsersSID))
-		if !found {
-			ui.Error().Msgf("Could not locate Authenticated Users")
-			return
-		}
 
-		ao.Iterate(func(o *engine.Node) bool {
+		view.Iterate(func(o *engine.Node) bool {
 			// Only computers and users
 			if o.Type() != engine.NodeTypeUser {
 				return true
 			}
 			if o.Attr(activedirectory.ServicePrincipalName).Len() > 0 {
-				o.Tag(kerberoast)
-				ao.EdgeTo(authusers, o, activedirectory.EdgeHasSPN)
+				out.AddTag(o, kerberoast)
 			}
 			return true
 		})
 	}, "Indicator that a user has a ServicePrincipalName and an authenticated user can Kerberoast it", engine.BeforeMergeFinal)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		anonymous, found := ao.Find(activedirectory.ObjectSid, engine.NV(windowssecurity.AnonymousLogonSID))
+	LoaderID.AddEdgeDeltaProcessor(func(view *engine.FrozenGraph, out *engine.EdgeDelta) {
+		authusers, found := view.Find(activedirectory.ObjectSid, engine.NV(windowssecurity.AuthenticatedUsersSID))
+		if !found {
+			ui.Error().Msgf("Could not locate Authenticated Users")
+			return
+		}
+
+		view.Iterate(func(o *engine.Node) bool {
+			if o.Type() != engine.NodeTypeUser {
+				return true
+			}
+			if o.Attr(activedirectory.ServicePrincipalName).Len() > 0 {
+				out.Add(authusers, o, activedirectory.EdgeHasSPN, false)
+			}
+			return true
+		})
+	}, "Kerberoast relationship edge", engine.BeforeMergeFinal)
+
+	LoaderID.AddNodePatchProcessor(func(view *engine.FrozenGraph, out *engine.NodePatchSet) {
+		anonymous, found := view.Find(activedirectory.ObjectSid, engine.NV(windowssecurity.AnonymousLogonSID))
 		if !found {
 			ui.Error().Msgf("Could not locate Anonymous Logon")
 			return
 		}
 
-		ao.Iterate(func(o *engine.Node) bool {
+		_ = anonymous
+		view.Iterate(func(o *engine.Node) bool {
 			// Only users
 			if o.Type() != engine.NodeTypeUser {
 				return true
 			}
 			if uac, ok := o.AttrInt(activedirectory.UserAccountControl); ok && uac&engine.UAC_DONT_REQ_PREAUTH != 0 {
-				o.Tag("asreproast")
-				ao.EdgeTo(anonymous, o, activedirectory.EdgeDontReqPreauth)
+				out.AddTag(o, "asreproast")
 			}
 			return true
 		})
 	}, "Indicator that a user has \"don't require preauth\" and can be ASREPRoasted", engine.BeforeMergeFinal)
+
+	LoaderID.AddEdgeDeltaProcessor(func(view *engine.FrozenGraph, out *engine.EdgeDelta) {
+		anonymous, found := view.Find(activedirectory.ObjectSid, engine.NV(windowssecurity.AnonymousLogonSID))
+		if !found {
+			ui.Error().Msgf("Could not locate Anonymous Logon")
+			return
+		}
+
+		view.Iterate(func(o *engine.Node) bool {
+			if o.Type() != engine.NodeTypeUser {
+				return true
+			}
+			if uac, ok := o.AttrInt(activedirectory.UserAccountControl); ok && uac&engine.UAC_DONT_REQ_PREAUTH != 0 {
+				out.Add(anonymous, o, activedirectory.EdgeDontReqPreauth, false)
+			}
+			return true
+		})
+	}, "ASREPRoast relationship edge", engine.BeforeMergeFinal)
 
 	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
 		ao.Iterate(func(o *engine.Node) bool {
@@ -1355,11 +1385,11 @@ func init() {
 			return true
 		})
 	}, "Change user script path (allows an attacker to trigger a user auth against an attacker controlled UNC path)", engine.BeforeMergeFinal)
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		ao.Iterate(func(o *engine.Node) bool {
+	LoaderID.AddEdgeDeltaProcessor(func(view *engine.FrozenGraph, out *engine.EdgeDelta) {
+		view.Iterate(func(o *engine.Node) bool {
 			o.Attr(activedirectory.MSDSHostServiceAccount).Iterate(func(dn engine.AttributeValue) bool {
-				if targetmsa, found := ao.Find(engine.DistinguishedName, dn); found {
-					ao.EdgeTo(o, targetmsa, activedirectory.EdgeHasMSA)
+				if targetmsa, found := view.Find(engine.DistinguishedName, dn); found {
+					out.Add(o, targetmsa, activedirectory.EdgeHasMSA, false)
 				}
 				return true
 			})
@@ -2012,20 +2042,18 @@ func init() {
 		engine.AfterMerge,
 	)
 
-	LoaderID.AddProcessor(
-		func(ao *engine.IndexedGraph) {
-			ao.Iterate(func(enrollementService *engine.Node) bool {
+	LoaderID.AddNodePatchProcessor(
+		func(view *engine.FrozenGraph, out *engine.NodePatchSet) {
+			view.Iterate(func(enrollementService *engine.Node) bool {
 				if enrollementService.Type() == engine.NodeTypePKIEnrollmentService {
-					var ca *engine.Node
-					var found bool
 					if cadns := enrollementService.OneAttr(activedirectory.DNSHostName); cadns != nil {
 						// find the CA machine object
-						if ca, found = ao.FindTwo(
+						if ca, found := view.FindTwo(
 							engine.Type, ObjectTypeMachine.ValueString(),
 							activedirectory.DNSHostName, cadns,
 						); found {
-							ca.Tag("role_certificate_authority")
-							ca.Tag("hvt")
+							out.AddTag(ca, "role_certificate_authority")
+							out.AddTag(ca, "hvt")
 						} else {
 							ui.Warn().Msgf("Couldn't locate dnsHostName %v acting as enrollmentservice", cadns)
 						}
@@ -2034,7 +2062,7 @@ func init() {
 					// Templates that is offered for enrollment
 					enrollementService.Attr(CertificateTemplates).Iterate(func(templatename engine.AttributeValue) bool {
 
-						templates, found := ao.FindTwoMulti(engine.Name, templatename,
+						templates, found := view.FindTwoMulti(engine.Name, templatename,
 							engine.ObjectClass, engine.NV("pKICertificateTemplate"))
 
 						if found {
@@ -2048,12 +2076,12 @@ func init() {
 									ui.Warn().Msgf("Found multiple templates for %s", templatename)
 								}
 
-								template.SetFlex(
+								out.SetFlex(template,
 									PublishedBy, engine.NV(enrollementService.DN()),
 									PublishedByDnsHostName, enrollementService.Attr(activedirectory.DNSHostName),
 								)
 
-								template.Tag("published")
+								out.AddTag(template, "published")
 
 								// classify the template as ESC1 - 11
 

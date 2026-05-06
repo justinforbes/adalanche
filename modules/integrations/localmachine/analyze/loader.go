@@ -57,9 +57,7 @@ func (ld *LocalMachineLoader) Init() error {
 				r.Close()
 
 				g := engine.NewLoaderObjects(ld)
-				g.BulkLoadEdges(true)
 				computerobject, err := ImportCollectorInfo(g, cinfo)
-				g.BulkLoadEdges(false)
 
 				_ = computerobject
 

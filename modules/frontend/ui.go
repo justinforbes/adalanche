@@ -525,7 +525,7 @@ func AddDataEndpoints(ws *WebService) {
 		}
 		pb := ui.ProgressBar("Extracting words", int64(ws.SuperGraph.Order()))
 		wordmap := make(map[string]struct{})
-		ws.SuperGraph.Iterate(func(object *engine.Node) bool {
+		ws.SuperGraph.IterateStable(func(object *engine.Node) bool {
 			pb.Add(1)
 			for _, attr := range scrapeatttributes {
 				if attr != engine.NonExistingAttribute {

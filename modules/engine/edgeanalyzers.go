@@ -123,11 +123,6 @@ func Process(ao *IndexedGraph, statustext string, l LoaderID, priority ProcessPr
 	}
 
 	if len(analysisProcessors) > 0 {
-		restartBulkLoading := ao.IsBulkLoading()
-		if restartBulkLoading {
-			ao.BulkLoadEdges(false)
-		}
-
 		view := ao.Freeze()
 		nodePatchResults := make([]NodePatchSet, len(analysisProcessors))
 		edgeDeltaResults := make([]EdgeDelta, len(analysisProcessors))
@@ -163,10 +158,6 @@ func Process(ao *IndexedGraph, statustext string, l LoaderID, priority ProcessPr
 
 		for i := range edgeDeltaResults {
 			edgeDeltaResults[i].Apply(ao)
-		}
-
-		if restartBulkLoading {
-			ao.BulkLoadEdges(true)
 		}
 	}
 
