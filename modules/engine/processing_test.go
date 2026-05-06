@@ -27,6 +27,15 @@ func withProgressDisabled(t *testing.T) {
 	})
 }
 
+func withRegisteredProcessorsSnapshot(t *testing.T) {
+	t.Helper()
+
+	snapshot := append([]processorInfo(nil), registeredProcessors...)
+	t.Cleanup(func() {
+		registeredProcessors = snapshot
+	})
+}
+
 func TestMergeGraphsMergesDuplicateDistinguishedNames(t *testing.T) {
 	withProgressDisabled(t)
 
@@ -97,5 +106,91 @@ func TestMergeGraphsAssignsOrphansToOrphanContainer(t *testing.T) {
 	}
 	if parent.Parent() != root {
 		t.Fatal("expected orphan container under merged root")
+	}
+}
+
+func TestProcessRunsGraphMutatorsBeforeNodePatchProcessors(t *testing.T) {
+	withProgressDisabled(t)
+	withRegisteredProcessorsSnapshot(t)
+
+	const loaderID LoaderID = 4242
+	var sawBeta bool
+
+	loaderID.AddGraphMutator(func(ao *IndexedGraph) {
+		ao.AddNew(Name, "beta", SAMAccountName, "BETA")
+	}, "add beta", AfterMerge)
+
+	loaderID.AddNodePatchProcessor(func(view *FrozenGraph, out *NodePatchSet) {
+		beta, found := view.Find(Name, NV("beta"))
+		if !found {
+			return
+		}
+		sawBeta = true
+		out.Set(beta, DisplayName, NV("Beta display"))
+	}, "annotate beta", AfterMerge)
+
+	graph := testGraph(testNamedNode("alpha"))
+	if err := Process(graph, "test processors", loaderID, AfterMerge); err != nil {
+		t.Fatalf("process failed: %v", err)
+	}
+
+	beta, found := graph.Find(Name, NV("beta"))
+	if !found {
+		t.Fatal("expected beta node to be added")
+	}
+	if !sawBeta {
+		t.Fatal("expected node patch processor to observe graph mutator output")
+	}
+	if got := beta.OneAttrString(DisplayName); got != "Beta display" {
+		t.Fatalf("expected beta display name to be patched, got %q", got)
+	}
+
+	displayIndex := graph.GetIndex(DisplayName)
+	nodes, found := displayIndex.Lookup(NV("beta display"))
+	if !found || nodes.Len() != 1 || nodes.First() != beta {
+		t.Fatal("expected patched display name to be reindexed")
+	}
+}
+
+func TestProcessAppliesEdgeDeltaProcessorsAfterFrozenAnalysis(t *testing.T) {
+	withProgressDisabled(t)
+	withRegisteredProcessorsSnapshot(t)
+
+	const loaderID LoaderID = 4343
+	canControl := testEdge("delta-edge")
+	var sawSource bool
+	var sawTarget bool
+
+	loaderID.AddEdgeDeltaProcessor(func(view *FrozenGraph, out *EdgeDelta) {
+		source, found := view.Find(Name, NV("source"))
+		if !found {
+			return
+		}
+		sawSource = true
+		target, found := view.Find(Name, NV("target"))
+		if !found {
+			return
+		}
+		sawTarget = true
+		out.Add(source, target, canControl, true)
+	}, "add edge delta", AfterMerge)
+
+	graph := testGraph(
+		testNamedNode("source"),
+		testNamedNode("target"),
+	)
+
+	if err := Process(graph, "test edge delta", loaderID, AfterMerge); err != nil {
+		t.Fatalf("process failed: %v", err)
+	}
+	if !sawSource || !sawTarget {
+		t.Fatal("expected edge delta processor to observe both nodes")
+	}
+
+	source, _ := graph.Find(Name, NV("source"))
+	target, _ := graph.Find(Name, NV("target"))
+	edge, found := graph.GetEdge(source, target)
+	if !found || !edge.IsSet(canControl) {
+		t.Fatal("expected edge delta to be applied")
 	}
 }

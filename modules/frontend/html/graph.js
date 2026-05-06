@@ -348,7 +348,7 @@ function isWasmLayout(layoutKey) {
 }
 
 function graphLayoutOptionValues() {
-  const raw = getpref(GRAPH_LAYOUT_OPTIONS_PREF, {});
+  const raw = pref(GRAPH_LAYOUT_OPTIONS_PREF, {});
   if (raw && typeof raw === "object" && !Array.isArray(raw)) {
     return raw;
   }
@@ -585,19 +585,19 @@ function getNodeBaseColor(nodeData) {
   if (entry && entry.color) {
     return entry.color;
   }
-  return translateAutoTheme(getpref("theme", "auto")) === "dark" ? "#6c757d" : "#8b949e";
+  return translateAutoTheme(pref("theme", "auto")) === "dark" ? "#6c757d" : "#8b949e";
 }
 
 function nodeThemeTextColor() {
-  return translateAutoTheme(getpref("theme", "auto")) === "dark" ? "white" : "black";
+  return translateAutoTheme(pref("theme", "auto")) === "dark" ? "white" : "black";
 }
 
 function edgeWidthMode() {
-  return String(getpref("graph.edgewidth", "flow") || "flow").toLowerCase();
+  return String(pref("graph.edgewidth", "flow") || "flow").toLowerCase();
 }
 
 function graphTheme() {
-  const dark = translateAutoTheme(getpref("theme", "auto")) === "dark";
+  const dark = translateAutoTheme(pref("theme", "auto")) === "dark";
   return {
     node: {
       label: byIdValue("nodelabels", "normal") !== "off",
@@ -633,7 +633,7 @@ function graphTheme() {
 }
 
 function computeNodeVisualPatch(nodeData) {
-  const dark = translateAutoTheme(getpref("theme", "auto")) === "dark";
+  const dark = translateAutoTheme(pref("theme", "auto")) === "dark";
   const patch = {
     label: renderlabel(String(nodeData.label || "")),
     color: getNodeBaseColor(nodeData),
@@ -669,7 +669,7 @@ function getEdgeColor(data) {
       return rule.color;
     }
   }
-  return translateAutoTheme(getpref("theme", "auto")) === "dark" ? "#ffffff" : "#000000";
+  return translateAutoTheme(pref("theme", "auto")) === "dark" ? "#ffffff" : "#000000";
 }
 
 function clearHighlightedEdges() {
@@ -731,7 +731,7 @@ function applyNodeStyles(targetGraph, nodestyleOverride) {
   if (!targetGraph) {
     return;
   }
-  const nodestyle = nodestyleOverride || getpref("graph.nodesize", "incoming");
+  const nodestyle = nodestyleOverride || pref("graph.nodesize", "incoming");
   const degreeMaps = nodeDegreeMaps(targetGraph);
   const counts = targetGraph.nodeIds().map((nodeId) => {
     if (nodestyle === "outgoing") {
@@ -769,7 +769,7 @@ function refreshGraphTheme() {
     return;
   }
   graph.setThemeConfig(graphTheme());
-  applyNodeStyles(graph, byIdValue("nodesizes", getpref("graph.nodesize", "incoming")));
+  applyNodeStyles(graph, byIdValue("nodesizes", pref("graph.nodesize", "incoming")));
   applyEdgeStyles(graph);
   if (!byIdChecked("showedgelabels")) {
     graph.clearHoveredEdges();
@@ -797,8 +797,8 @@ function ensureEdgeHoverCard() {
   card.style.zIndex = "1080";
   card.style.maxWidth = "22rem";
   card.style.minWidth = "14rem";
-  card.style.background = translateAutoTheme(getpref("theme", "auto")) === "dark" ? "rgba(15, 18, 22, 0.96)" : "rgba(255, 255, 255, 0.96)";
-  card.style.color = translateAutoTheme(getpref("theme", "auto")) === "dark" ? "#f8f9fa" : "#111827";
+  card.style.background = translateAutoTheme(pref("theme", "auto")) === "dark" ? "rgba(15, 18, 22, 0.96)" : "rgba(255, 255, 255, 0.96)";
+  card.style.color = translateAutoTheme(pref("theme", "auto")) === "dark" ? "#f8f9fa" : "#111827";
   card.style.border = "1px solid rgba(148, 163, 184, 0.35)";
   card.style.backdropFilter = "blur(6px)";
   document.body.appendChild(card);
@@ -872,7 +872,7 @@ function legendEdgeEntries() {
 }
 
 function legendSwatch(color) {
-  const fill = color || (translateAutoTheme(getpref("theme", "auto")) === "dark" ? "#6c757d" : "#8b949e");
+  const fill = color || (translateAutoTheme(pref("theme", "auto")) === "dark" ? "#6c757d" : "#8b949e");
   return `<span class="rounded-circle border flex-shrink-0" style="display:inline-block;width:2.4rem;height:2.4rem;background:${fill};"></span>`;
 }
 
@@ -1013,7 +1013,7 @@ function showNodeDetails(nodeId) {
   fetchJSONOrThrow("api/details/id/" + String(nodeId).substring(1))
     .then(function (data) {
       let windowname = "details_" + nodeId;
-      if (getpref("ui.open.details.in.same.window", true)) {
+      if (prefBool("ui.open.details.in.same.window", true)) {
         windowname = "node_details";
       }
       new_window(windowname, rendernode(data), renderdetails(data));
@@ -1031,7 +1031,7 @@ function showEdgeDetails(edgeId) {
   fetchJSONOrThrow("api/edges/id/" + String(edgeData.source).substring(1) + "," + String(edgeData.target).substring(1))
     .then(function (data) {
       let windowname = "edge_" + edgeData.source + "_to_" + edgeData.target;
-      if (getpref("ui.open.details.in.same.window", true)) {
+      if (prefBool("ui.open.details.in.same.window", true)) {
         windowname = "edge_details";
       }
       new_window(
@@ -1383,7 +1383,7 @@ function createAdalancheGraph(elements) {
 }
 
 function selectedGraphLayout() {
-  const preferred = String(getpref(GRAPH_LAYOUT_PREF, DEFAULT_GRAPH_LAYOUT) || "").trim();
+  const preferred = String(pref(GRAPH_LAYOUT_PREF, DEFAULT_GRAPH_LAYOUT) || "").trim();
   if (preferred) {
     return preferred;
   }

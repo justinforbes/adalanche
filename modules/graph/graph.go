@@ -34,9 +34,13 @@ type Graph[NodeType GraphNodeInterface[NodeType], EdgeType GraphEdgeInterface[Ed
 }
 
 func NewGraph[NodeType GraphNodeInterface[NodeType], EdgeType GraphEdgeInterface[EdgeType]]() Graph[NodeType, EdgeType] {
+	return NewGraphWithCapacity[NodeType, EdgeType](0, 0)
+}
+
+func NewGraphWithCapacity[NodeType GraphNodeInterface[NodeType], EdgeType GraphEdgeInterface[EdgeType]](nodeCapacity, edgeCapacity int) Graph[NodeType, EdgeType] {
 	return Graph[NodeType, EdgeType]{
-		nodes: make(map[NodeType]map[string]any),
-		edges: make(map[NodePair[NodeType]]Edge[EdgeType]),
+		nodes: make(map[NodeType]map[string]any, nodeCapacity),
+		edges: make(map[NodePair[NodeType]]Edge[EdgeType], edgeCapacity),
 	}
 }
 
@@ -54,7 +58,7 @@ func (pg *Graph[NodeType, EdgeType]) Nodes() map[NodeType]map[string]any {
 }
 
 func (pg *Graph[NodeType, EdgeType]) AddNode(newnode NodeType) {
-	if !pg.HasNode(newnode) {
+	if _, found := pg.nodes[newnode]; !found {
 		pg.nodes[newnode] = nil
 	}
 }
@@ -660,30 +664,30 @@ func (pg Graph[NodeType, EdgeType]) Size() int {
 }
 
 type SCCDAG[NodeType GraphNodeInterface[NodeType], EdgeType GraphEdgeInterface[EdgeType]] struct {
-	NodeToSCC map[NodeType]int     // Map each original node to its SCC index
-	Edges     map[int]map[int]bool // Edge from SCC i → SCC j
-	Nodes     [][]NodeType         // Each SCC as a slice of nodes
+	NodeToSCC map[NodeType]int   // Map each original node to its SCC index
+	Edges     []map[int]struct{} // Edge from SCC i → SCC j
+	Nodes     [][]NodeType       // Each SCC as a slice of nodes
 }
 
 func CollapseSCCs[NodeType GraphNodeInterface[NodeType], EdgeType GraphEdgeInterface[EdgeType]](sccs [][]NodeType, g Graph[NodeType, EdgeType]) SCCDAG[NodeType, EdgeType] {
-	nodeToSCC := make(map[NodeType]int)
+	nodeToSCC := make(map[NodeType]int, len(g.nodes))
 	for i, scc := range sccs {
 		for _, n := range scc {
 			nodeToSCC[n] = i
 		}
 	}
 
-	edges := make(map[int]map[int]bool)
-	for i := range sccs {
-		edges[i] = make(map[int]bool)
-	}
+	edges := make([]map[int]struct{}, len(sccs))
 
 	// Build SCC-DAG
 	for pair := range g.edges {
 		srcSCC := nodeToSCC[pair.Source]
 		tgtSCC := nodeToSCC[pair.Target]
 		if srcSCC != tgtSCC {
-			edges[srcSCC][tgtSCC] = true
+			if edges[srcSCC] == nil {
+				edges[srcSCC] = make(map[int]struct{})
+			}
+			edges[srcSCC][tgtSCC] = struct{}{}
 		}
 	}
 
@@ -695,27 +699,23 @@ func CollapseSCCs[NodeType GraphNodeInterface[NodeType], EdgeType GraphEdgeInter
 }
 
 func TopoSortDAG[NodeType GraphNodeInterface[NodeType], EdgeType GraphEdgeInterface[EdgeType]](dag SCCDAG[NodeType, EdgeType]) []int {
-	indegree := make(map[int]int)
-	for i := range dag.Nodes {
-		indegree[i] = 0
-	}
+	indegree := make([]int, len(dag.Nodes))
 	for _, targets := range dag.Edges {
 		for tgt := range targets {
 			indegree[tgt]++
 		}
 	}
 
-	var queue []int
+	queue := make([]int, 0, len(dag.Nodes))
 	for i, deg := range indegree {
 		if deg == 0 {
 			queue = append(queue, i)
 		}
 	}
 
-	var order []int
-	for len(queue) > 0 {
-		u := queue[0]
-		queue = queue[1:]
+	order := make([]int, 0, len(dag.Nodes))
+	for head := 0; head < len(queue); head++ {
+		u := queue[head]
 		order = append(order, u)
 		for v := range dag.Edges[u] {
 			indegree[v]--

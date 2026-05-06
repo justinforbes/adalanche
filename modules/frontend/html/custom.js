@@ -19,7 +19,7 @@ function setTheme(theme) {
 }
 
 function applyPreferredTheme() {
-  const themeMode = getpref("theme", "auto");
+  const themeMode = pref("theme", "auto");
   setTheme(translateAutoTheme(themeMode));
 }
 
@@ -35,7 +35,7 @@ document.addEventListener("preferences.updated", (event) => {
 });
 
 window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => {
-  if (getpref("theme", "auto") === "auto") {
+  if (pref("theme", "auto") === "auto") {
     applyPreferredTheme();
   }
 });
@@ -278,7 +278,7 @@ async function aqlanalyze(e) {
 
     // Single Alpine state write collapses immediately; $persist+backend adapter
     // handles saving state.
-    if (getpref("ui.hide.options.on.analysis", false)) {
+    if (prefBool("ui.hide.options.on.analysis", false)) {
       if (window.Alpine && typeof window.Alpine.$data === "function") {
         const optionsRoot = document.getElementById("options");
         if (optionsRoot) {
@@ -289,7 +289,7 @@ async function aqlanalyze(e) {
         }
       }
     }
-    if (getpref("ui.hide.query.on.analysis", false)) {
+    if (prefBool("ui.hide.query.on.analysis", false)) {
       window.dispatchEvent(
         new CustomEvent("ui:set-query-open", {
           detail: false,
@@ -809,7 +809,7 @@ function hasReadyInitialQuery() {
 }
 
 function autorun_query() {
-  if (!initial_query_set || !settings_loaded || !data_loaded || !getpref("ui.run.query.on.startup", true) || initial_query_has_run) {
+  if (!initial_query_set || !settings_loaded || !data_loaded || !prefBool("ui.run.query.on.startup", true) || initial_query_has_run) {
     return;
   }
 
@@ -846,7 +846,7 @@ function exploreTree() {
         const data = await fetchJSON("api/details/id/" + node.id);
         const details = renderdetails(data);
         let windowname = "details_" + node.id;
-        if (getpref("ui.open.details.in.same.window", true)) {
+        if (prefBool("ui.open.details.in.same.window", true)) {
           windowname = "node_details";
         }
         new_window(windowname, "Item details", details);

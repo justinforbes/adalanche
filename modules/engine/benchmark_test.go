@@ -213,6 +213,50 @@ func BenchmarkGraphIterate(b *testing.B) {
 	}
 }
 
+func BenchmarkFrozenGraphIterateLarge(b *testing.B) {
+	graph := buildSyntheticGraph(largeSyntheticGraphConfig())
+	view := graph.Freeze()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		view.Iterate(func(*Node) bool {
+			return true
+		})
+	}
+}
+
+func BenchmarkCalculateGraphValuesSyntheticIndexedGraph(b *testing.B) {
+	graph := buildSyntheticGraph(mediumSyntheticGraphConfig())
+	matchEdges := EdgeBitmap{}.
+		Set(testEdge("synthetic-member")).
+		Set(testEdge("synthetic-admin"))
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = CalculateGraphValues(graph, matchEdges, 0, "indexed synthetic", func(node *Node) int {
+			return len(node.OneAttrString(Name)) % 5
+		})
+	}
+}
+
+func BenchmarkCalculateGraphValuesSyntheticFrozenGraph(b *testing.B) {
+	graph := buildSyntheticGraph(mediumSyntheticGraphConfig())
+	view := graph.Freeze()
+	matchEdges := EdgeBitmap{}.
+		Set(testEdge("synthetic-member")).
+		Set(testEdge("synthetic-admin"))
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		_ = CalculateGraphValues(view, matchEdges, 0, "frozen synthetic", func(node *Node) int {
+			return len(node.OneAttrString(Name)) % 5
+		})
+	}
+}
+
 func BenchmarkAddRelaxed(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {

@@ -168,7 +168,7 @@ func MergeGraphs(graphs []*IndexedGraph) (*IndexedGraph, error) {
 		}, 0)
 	}
 	pb.Finish()
-	superGraph.FlushEdges()
+	superGraph.BulkLoadEdges(false)
 
 	var orphans int
 	processed := make(map[*Node]struct{})

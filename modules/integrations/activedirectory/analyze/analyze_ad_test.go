@@ -28,6 +28,13 @@ func newADTestGraph(nodes ...*engine.Node) *engine.IndexedGraph {
 	return tg
 }
 
+func applyADNodePatchProcessor(graph *engine.IndexedGraph, processor func(*engine.FrozenGraph, *engine.NodePatchSet)) {
+	patches := &engine.NodePatchSet{}
+	processor(graph.Freeze(), patches)
+	patches.Apply(graph)
+	graph.DropIndexes()
+}
+
 func requireEdgeSet(t *testing.T, graph *engine.IndexedGraph, source, target *engine.Node, edge engine.Edge) {
 	t.Helper()
 
@@ -355,6 +362,132 @@ func TestResetPasswordOnlyTargetsAccounts(t *testing.T) {
 	}
 	requireEdgeSet(t, graph, principal, account, activedirectory.EdgeResetPassword)
 	requireNoEdgeSet(t, graph, principal, ou, activedirectory.EdgeResetPassword)
+}
+
+func TestApplyDownLevelLogonNamePatches(t *testing.T) {
+	crossRef := engine.NewNode(
+		engine.ObjectClass, "crossRef",
+		NCName, "DC=example,DC=com",
+		NetBIOSName, "EXAMPLE",
+	)
+	user := engine.NewNode(
+		engine.Name, "Alice",
+		engine.SAMAccountName, "alice",
+		engine.DistinguishedName, "CN=Alice,OU=Users,DC=example,DC=com",
+	)
+
+	graph := newADTestGraph(crossRef, user)
+	applyADNodePatchProcessor(graph, applyDownLevelLogonNamePatches)
+
+	if got := user.OneAttrString(engine.DownLevelLogonName); got != `EXAMPLE\alice` {
+		t.Fatalf("expected down-level logon name, got %q", got)
+	}
+}
+
+func TestApplyDomainContextPatches(t *testing.T) {
+	user := engine.NewNode(
+		engine.Name, "Alice",
+		engine.DistinguishedName, "CN=Alice,OU=Users,DC=example,DC=com",
+	)
+
+	graph := newADTestGraph(user)
+	applyADNodePatchProcessor(graph, applyDomainContextPatches)
+
+	if got := user.OneAttrString(engine.DomainContext); got != "DC=example,DC=com" {
+		t.Fatalf("expected domain context, got %q", got)
+	}
+}
+
+func TestApplyObjectClassAndCategoryPatches(t *testing.T) {
+	schemaClass := engine.NewNode(
+		engine.LDAPDisplayName, "user",
+		activedirectory.SchemaIDGUID, ObjectGuidUser,
+	)
+	objectCategory := engine.NewNode(
+		engine.DistinguishedName, "CN=Person,CN=Schema,CN=Configuration,DC=example,DC=com",
+		activedirectory.SchemaIDGUID, ObjectGuidUser,
+		activedirectory.Name, "User",
+	)
+	user := engine.NewNode(
+		engine.Name, "Alice",
+		engine.ObjectClass, "user",
+		engine.ObjectCategory, "CN=Person,CN=Schema,CN=Configuration,DC=example,DC=com",
+	)
+
+	graph := newADTestGraph(schemaClass, objectCategory, user)
+	applyADNodePatchProcessor(graph, applyObjectClassAndCategoryPatches)
+
+	if got := user.Attr(engine.ObjectClassGUIDs).Len(); got != 1 {
+		t.Fatalf("expected one object class guid, got %d", got)
+	}
+	if got := user.OneAttrString(engine.Type); got != "User" {
+		t.Fatalf("expected type to be set from object category, got %q", got)
+	}
+}
+
+func TestApplyProtectedUserTags(t *testing.T) {
+	protectedUsers := engine.NewNode(
+		engine.Name, "Protected Users",
+		engine.Type, engine.NodeTypeGroup.ValueString(),
+		engine.ObjectSid, mustSID(t, "S-1-5-21-111-222-333-525"),
+	)
+	user := engine.NewNode(
+		engine.Name, "Alice",
+		engine.Type, engine.NodeTypeUser.ValueString(),
+		engine.DistinguishedName, "CN=Alice,OU=Users,DC=example,DC=com",
+	)
+
+	graph := newADTestGraph(protectedUsers, user)
+	graph.EdgeTo(user, protectedUsers, activedirectory.EdgeMemberOfGroup)
+
+	applyADNodePatchProcessor(graph, applyProtectedUserTags)
+
+	if !user.HasTag("protected_user") {
+		t.Fatal("expected protected_user tag")
+	}
+}
+
+func TestApplyWellKnownSIDDisplayNames(t *testing.T) {
+	group := engine.NewNode(
+		engine.Name, "Builtin Admins",
+		engine.ObjectSid, windowssecurity.AuthenticatedUsersSID,
+	)
+
+	graph := newADTestGraph(group)
+	applyADNodePatchProcessor(graph, applyWellKnownSIDDisplayNames)
+
+	if got := group.OneAttrString(engine.DisplayName); got == "" {
+		t.Fatal("expected display name to be filled from known SID")
+	}
+}
+
+func TestApplyIndirectMemberOfPatches(t *testing.T) {
+	top := engine.NewNode(
+		engine.Name, "TopGroup",
+		engine.Type, engine.NodeTypeGroup.ValueString(),
+		engine.DistinguishedName, "CN=TopGroup,OU=Groups,DC=example,DC=com",
+	)
+	mid := engine.NewNode(
+		engine.Name, "MidGroup",
+		engine.Type, engine.NodeTypeGroup.ValueString(),
+		engine.DistinguishedName, "CN=MidGroup,OU=Groups,DC=example,DC=com",
+	)
+	leaf := engine.NewNode(
+		engine.Name, "LeafUser",
+		engine.Type, engine.NodeTypeUser.ValueString(),
+		engine.DistinguishedName, "CN=LeafUser,OU=Users,DC=example,DC=com",
+	)
+
+	graph := newADTestGraph(top, mid, leaf)
+	graph.EdgeTo(mid, top, activedirectory.EdgeMemberOfGroup)
+	graph.EdgeTo(leaf, mid, activedirectory.EdgeMemberOfGroup)
+
+	applyADNodePatchProcessor(graph, applyIndirectMemberOfPatches)
+
+	indirect := top.Attr(MemberOfIndirect)
+	if indirect.Len() != 1 || indirect.First().String() != leaf.OneAttrString(engine.DistinguishedName) {
+		t.Fatalf("expected indirect member DN %q, got %v", leaf.OneAttrString(engine.DistinguishedName), indirect)
+	}
 }
 
 func TestWriteAllowedToActAndRBCDAddEdges(t *testing.T) {

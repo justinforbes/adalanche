@@ -294,6 +294,10 @@ func (g *IndexedGraph) Edges(node *Node, direction EdgeDirection) EdgeFilter {
 	}
 }
 
+func (g *IndexedGraph) IterateEdges(node *Node, direction EdgeDirection, iter func(target *Node, ebm EdgeBitmap) bool) {
+	g.Edges(node, direction).Iterate(iter)
+}
+
 type EdgeFilter struct {
 	graph     *IndexedGraph
 	direction EdgeDirection

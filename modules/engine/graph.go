@@ -95,6 +95,12 @@ func (g *IndexedGraph) BulkLoadEdges(enable bool) bool {
 	return result
 }
 
+func (g *IndexedGraph) IsBulkLoading() bool {
+	g.nodeMutex.RLock()
+	defer g.nodeMutex.RUnlock()
+	return g.bulkloading
+}
+
 func (g *IndexedGraph) FlushEdges() bool {
 	var result bool
 	g.nodeMutex.Lock()

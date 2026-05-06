@@ -91,6 +91,230 @@ var (
 
 var warnedgpos = make(map[string]struct{})
 
+type downLevelDomainInfo struct {
+	suffix string
+	name   string
+}
+
+func downLevelDomainMappings(view *engine.FrozenGraph) []downLevelDomainInfo {
+	results, found := view.FindMulti(engine.ObjectClass, engine.NV("crossRef"))
+	if !found {
+		ui.Error().Msg("No domainDNS object found, can't apply DownLevelLogonName to objects")
+		return nil
+	}
+
+	domains := make([]downLevelDomainInfo, 0, results.Len())
+	results.Iterate(func(o *engine.Node) bool {
+		dn := o.OneAttrString(NCName)
+		netbiosname := o.OneAttrString(NetBIOSName)
+		if dn == "" || netbiosname == "" {
+			return true
+		}
+
+		domains = append(domains, downLevelDomainInfo{
+			suffix: dn,
+			name:   netbiosname,
+		})
+		return true
+	})
+
+	if len(domains) == 0 {
+		ui.Error().Msg("No NCName to NetBIOSName mapping found, can't apply DownLevelLogonName to objects")
+		return nil
+	}
+
+	sort.Slice(domains, func(i, j int) bool {
+		return len(domains[i].suffix) > len(domains[j].suffix)
+	})
+
+	return domains
+}
+
+func applyDownLevelLogonNamePatches(view *engine.FrozenGraph, out *engine.NodePatchSet) {
+	domains := downLevelDomainMappings(view)
+	if len(domains) == 0 {
+		return
+	}
+
+	view.Iterate(func(o *engine.Node) bool {
+		if !o.HasAttr(engine.SAMAccountName) {
+			return true
+		}
+
+		dn := o.DN()
+		for _, domain := range domains {
+			if strings.HasSuffix(dn, domain.suffix) {
+				out.Set(o, engine.DownLevelLogonName, engine.NV(domain.name+"\\"+o.OneAttrString(engine.SAMAccountName)))
+				break
+			}
+		}
+		return true
+	})
+}
+
+func applyDomainContextPatches(view *engine.FrozenGraph, out *engine.NodePatchSet) {
+	view.Iterate(func(o *engine.Node) bool {
+		if o.DN() == "" || o.HasAttr(engine.DomainContext) {
+			return true
+		}
+
+		parts := strings.Split(o.DN(), ",")
+		lastpart := -1
+		for i := len(parts) - 1; i >= 0; i-- {
+			part := parts[i]
+			if len(part) < 3 || !strings.EqualFold("dc=", part[:3]) {
+				break
+			}
+			if strings.EqualFold("DC=ForestDNSZones", part) || strings.EqualFold("DC=DomainDNSZones", part) {
+				break
+			}
+			lastpart = i
+		}
+
+		if lastpart != -1 {
+			out.Set(o, engine.DomainContext, engine.NV(strings.Join(parts[lastpart:], ",")))
+		}
+		return true
+	})
+}
+
+func applyObjectClassAndCategoryPatches(view *engine.FrozenGraph, out *engine.NodePatchSet) {
+	view.Iterate(func(object *engine.Node) bool {
+		objectclasses := object.Attr(engine.ObjectClass)
+		if objectclasses.Len() > 0 {
+			guids := make([]engine.AttributeValue, 0, objectclasses.Len())
+			objectclasses.Iterate(func(class engine.AttributeValue) bool {
+				if oto, found := view.Find(engine.LDAPDisplayName, class); found {
+					if guid := oto.OneAttr(activedirectory.SchemaIDGUID); guid == nil {
+						ui.Debug().Msgf("%v", oto)
+						ui.Fatal().Msgf("Could not translate SchemaIDGUID for class %v - I need a Schema to work properly", class)
+					} else {
+						guids = append(guids, guid)
+					}
+				} else {
+					ui.Warn().Msgf("Could not resolve object class %v, perhaps you didn't get a dump of the schema?", class.String())
+				}
+				return true
+			})
+			out.Set(object, engine.ObjectClassGUIDs, guids...)
+		}
+
+		objectcategoryguid := engine.NV(engine.UnknownGUID)
+		simple := engine.NV("Unknown")
+		typedn := object.OneAttr(engine.ObjectCategory)
+
+		if typedn != nil {
+			if oto, found := view.Find(engine.DistinguishedName, typedn); found {
+				if _, ok := oto.OneAttrRaw(activedirectory.SchemaIDGUID).(uuid.UUID); ok {
+					objectcategoryguid = oto.OneAttr(activedirectory.SchemaIDGUID)
+					simple = oto.OneAttr(activedirectory.Name)
+				} else {
+					ui.Error().Msgf("Could not translate SchemaIDGUID for %v", typedn)
+				}
+			} else {
+				ui.Error().Msgf("Could not resolve object category %v, perhaps you didn't get a dump of the schema?", typedn)
+			}
+		}
+
+		out.SetFlex(
+			object,
+			engine.ObjectCategoryGUID, objectcategoryguid,
+			engine.Type, simple,
+		)
+		return true
+	})
+}
+
+func applyProtectedUserTags(view *engine.FrozenGraph, out *engine.NodePatchSet) {
+	view.Iterate(func(object *engine.Node) bool {
+		if object.SID().Component(2) == 21 && object.SID().RID() == 525 {
+			view.EdgeIteratorRecursive(object, engine.In, engine.EdgeBitmap{}.Set(activedirectory.EdgeMemberOfGroup), true, func(source, member *engine.Node, edge engine.EdgeBitmap, depth int) bool {
+				if member.Type() == engine.NodeTypeComputer || member.Type() == engine.NodeTypeUser {
+					out.AddTag(member, "protected_user")
+				}
+				return true
+			})
+		}
+		return true
+	})
+}
+
+func applyWellKnownSIDDisplayNames(view *engine.FrozenGraph, out *engine.NodePatchSet) {
+	view.Iterate(func(o *engine.Node) bool {
+		if o.HasAttr(engine.ObjectSid) && !o.HasAttr(engine.DisplayName) {
+			if name, found := windowssecurity.KnownSIDs[o.SID().String()]; found {
+				out.SetFlex(o, engine.DisplayName, name)
+			}
+		}
+		return true
+	})
+}
+
+func applyIndirectMemberOfPatches(view *engine.FrozenGraph, out *engine.NodePatchSet) {
+	groupToMemberGraph := graph.NewGraph[*engine.Node, engine.EdgeBitmap]()
+
+	view.Iterate(func(group *engine.Node) bool {
+		if group.Type() == engine.NodeTypeGroup && group.HasAttr(activedirectory.DistinguishedName) {
+			view.IterateEdges(group, engine.In, func(member *engine.Node, edge engine.EdgeBitmap) bool {
+				if edge.IsSet(activedirectory.EdgeMemberOfGroup) {
+					groupToMemberGraph.AddEdge(group, member, edge)
+				}
+				return true
+			})
+		}
+		return true
+	})
+
+	scc := groupToMemberGraph.SCCKosaraju()
+	dag := graph.CollapseSCCs(scc, groupToMemberGraph)
+
+	sccReach := make([]map[int]int, len(dag.Nodes))
+	for i := range dag.Nodes {
+		sccReach[i] = make(map[int]int, 4)
+		sccReach[i][i] = 0
+	}
+
+	topo := graph.TopoSortDAG(dag)
+	for i := len(topo) - 1; i >= 0; i-- {
+		sccIdx := topo[i]
+		for succ := range dag.Edges[sccIdx] {
+			if _, seen := sccReach[sccIdx][succ]; seen {
+				continue
+			}
+			sccReach[sccIdx][succ] = 1
+			for r, d := range sccReach[succ] {
+				newDist := d + 1
+				if existing, exists := sccReach[sccIdx][r]; !exists || newDist < existing {
+					sccReach[sccIdx][r] = newDist
+				}
+			}
+		}
+	}
+
+	groupList := make([]engine.AttributeValue, 0, 32)
+	for i, sccNodes := range dag.Nodes {
+		for _, group := range sccNodes {
+			groupList = groupList[:0]
+			for reachIdx, distance := range sccReach[i] {
+				if distance > 1 {
+					for _, member := range dag.Nodes[reachIdx] {
+						if member == group {
+							continue
+						}
+						if dn := member.OneAttr(engine.DistinguishedName); dn != nil {
+							groupList = append(groupList, dn)
+						}
+					}
+				}
+			}
+
+			if len(groupList) > 0 {
+				out.Set(group, MemberOfIndirect, groupList...)
+			}
+		}
+	}
+}
+
 func addDomainDNSDCSyncEdges(ao *engine.IndexedGraph) {
 	ao.Iterate(func(o *engine.Node) bool {
 		if o.Type() != engine.NodeTypeDomainDNS {
@@ -1298,100 +1522,11 @@ func init() {
 		"applying parent/child relationships",
 		engine.BeforeMergeHigh)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		type domaininfo struct {
-			suffix string
-			name   string
-		}
-		var domains []domaininfo
-
-		results, found := ao.FindMulti(engine.ObjectClass, engine.NV("crossRef"))
-
-		if !found {
-			ui.Error().Msg("No domainDNS object found, can't apply DownLevelLogonName to objects")
-			return
-		}
-
-		results.Iterate(func(o *engine.Node) bool {
-			// Store domain -> netbios name in array for later
-			dn := o.OneAttrString(NCName)
-			netbiosname := o.OneAttrString(NetBIOSName)
-
-			if dn == "" || netbiosname == "" {
-				// Some crossref objects have no NCName or NetBIOSName, skip them
-				return true // continue
-			}
-
-			domains = append(domains, domaininfo{
-				suffix: dn,
-				name:   netbiosname,
-			})
-			return true
-		})
-
-		if len(domains) == 0 {
-			ui.Error().Msg("No NCName to NetBIOSName mapping found, can't apply DownLevelLogonName to objects")
-			return
-		}
-
-		// Sort the domains so we match on longest first
-		sort.Slice(domains, func(i, j int) bool {
-			// Less is More - so we sort in reverse order
-			return len(domains[i].suffix) > len(domains[j].suffix)
-		})
-
-		// Apply DownLevelLogonName to relevant objects
-		ao.Iterate(func(o *engine.Node) bool {
-			if !o.HasAttr(engine.SAMAccountName) {
-				return true
-			}
-			dn := o.DN()
-			for _, domaininfo := range domains {
-				if strings.HasSuffix(dn, domaininfo.suffix) {
-					o.Set(engine.DownLevelLogonName, engine.NV(domaininfo.name+"\\"+o.OneAttrString(engine.SAMAccountName)))
-					break
-				}
-			}
-			return true
-		})
-
-		ao.DropIndex(engine.DownLevelLogonName)
-	},
+	LoaderID.AddNodePatchProcessor(applyDownLevelLogonNamePatches,
 		"applying DownLevelLogonName attribute",
 		engine.BeforeMergeLow)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		// Add domain part attribute from distinguished name to objects
-		ao.Iterate(func(o *engine.Node) bool {
-			// Only objects with a DistinguishedName
-			if o.DN() == "" {
-				return true
-			}
-
-			if o.HasAttr(engine.DomainContext) {
-				return true
-			}
-
-			parts := strings.Split(o.DN(), ",")
-			lastpart := -1
-
-			for i := len(parts) - 1; i >= 0; i-- {
-				part := parts[i]
-				if len(part) < 3 || !strings.EqualFold("dc=", part[:3]) {
-					break
-				}
-				if strings.EqualFold("DC=ForestDNSZones", part) || strings.EqualFold("DC=DomainDNSZones", part) {
-					break
-				}
-				lastpart = i
-			}
-
-			if lastpart != -1 {
-				o.Set(engine.DomainContext, engine.NV(strings.Join(parts[lastpart:], ",")))
-			}
-			return true
-		})
-	},
+	LoaderID.AddNodePatchProcessor(applyDomainContextPatches,
 		"applying domain part attribute",
 		engine.BeforeMergeLow)
 
@@ -1741,75 +1876,12 @@ func init() {
 		"Active Directory objects and metadata",
 		engine.BeforeMergeHigh)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		ao.Iterate(func(object *engine.Node) bool {
-			// We'll put the ObjectClass UUIDs in a synthetic attribute, so we can look it up later quickly (and without access to Objects)
-			objectclasses := object.Attr(engine.ObjectClass)
-			if objectclasses.Len() > 0 {
-				guids := make([]engine.AttributeValue, 0, objectclasses.Len())
-				objectclasses.Iterate(func(class engine.AttributeValue) bool {
-					if oto, found := ao.Find(engine.LDAPDisplayName, class); found {
-						if guid := oto.OneAttr(activedirectory.SchemaIDGUID); guid == nil {
-							ui.Debug().Msgf("%v", oto)
-							ui.Fatal().Msgf("Could not translate SchemaIDGUID for class %v - I need a Schema to work properly", class)
-						} else {
-							guids = append(guids, guid)
-						}
-					} else {
-						ui.Warn().Msgf("Could not resolve object class %v, perhaps you didn't get a dump of the schema?", class.String())
-					}
-					return true // continue
-				})
-				object.Set(engine.ObjectClassGUIDs, guids...)
-			}
-
-			// ObjectCategory handling
-			var objectcategoryguid engine.AttributeValue
-			var simple engine.AttributeValue
-
-			objectcategoryguid = engine.NV(engine.UnknownGUID)
-			simple = engine.NV("Unknown")
-
-			typedn := object.OneAttr(engine.ObjectCategory)
-
-			// Does it have one, and does it have a comma, then we're assuming it's not just something we invented
-			if typedn != nil {
-				if oto, found := ao.Find(engine.DistinguishedName, typedn); found {
-					if _, ok := oto.OneAttrRaw(activedirectory.SchemaIDGUID).(uuid.UUID); ok {
-						objectcategoryguid = oto.OneAttr(activedirectory.SchemaIDGUID)
-						simple = oto.OneAttr(activedirectory.Name)
-					} else {
-						ui.Error().Msgf("Could not translate SchemaIDGUID for %v", typedn)
-					}
-				} else {
-					ui.Error().Msgf("Could not resolve object category %v, perhaps you didn't get a dump of the schema?", typedn)
-				}
-			}
-
-			object.SetFlex(
-				engine.ObjectCategoryGUID, objectcategoryguid,
-				engine.Type, simple,
-			)
-			return true
-		})
-	},
+	LoaderID.AddNodePatchProcessor(applyObjectClassAndCategoryPatches,
 		"Set type (for Type call) to Active Directory objects",
 		engine.BeforeMergeLow,
 	)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		ao.Iterate(func(object *engine.Node) bool {
-			if object.SID().Component(2) == 21 && object.SID().RID() == 525 { // "Protected Users"
-				ao.EdgeIteratorRecursive(object, engine.In, engine.EdgeBitmap{}.Set(activedirectory.EdgeMemberOfGroup), true, func(source, member *engine.Node, edge engine.EdgeBitmap, depth int) bool {
-					if member.Type() == engine.NodeTypeComputer || member.Type() == engine.NodeTypeUser {
-						member.Tag("protected_user")
-					}
-					return true
-				})
-			}
-			return true
-		})
-	},
+	LoaderID.AddNodePatchProcessor(applyProtectedUserTags,
 		"Protected users meta attribute",
 		engine.BeforeMerge,
 	)
@@ -1866,16 +1938,7 @@ func init() {
 		engine.AfterMergeLow,
 	)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		ao.Iterate(func(o *engine.Node) bool {
-			if o.HasAttr(engine.ObjectSid) && !o.HasAttr(engine.DisplayName) {
-				if name, found := windowssecurity.KnownSIDs[o.SID().String()]; found {
-					o.SetFlex(engine.DisplayName, name)
-				}
-			}
-			return true
-		})
-	},
+	LoaderID.AddNodePatchProcessor(applyWellKnownSIDDisplayNames,
 		"Adding displayName to Well-Known SID objects that are missing them",
 		engine.AfterMergeLow)
 
@@ -1944,77 +2007,7 @@ func init() {
 		})
 	}, "Permissions that lets someone modify userAccountControl", engine.BeforeMergeFinal)
 
-	LoaderID.AddProcessor(func(ao *engine.IndexedGraph) {
-		// Create a new graph representation of all nodes with reversed EdgeMemberOfGroup edges
-		groupToMemberGraph := graph.NewGraph[*engine.Node, engine.EdgeBitmap]()
-
-		// Build graph with reversed edges - from groups to their members
-		ao.Iterate(func(group *engine.Node) bool {
-			if group.Type() != engine.NodeTypeGroup && group.HasAttr(activedirectory.DistinguishedName) {
-				ao.Edges(group, engine.In).Iterate(func(member *engine.Node, edge engine.EdgeBitmap) bool {
-					if edge.IsSet(activedirectory.EdgeMemberOfGroup) {
-						groupToMemberGraph.AddEdge(group, member, edge)
-					}
-					return true
-				})
-			}
-			return true
-		})
-
-		scc := groupToMemberGraph.SCCKosaraju()
-		dag := graph.CollapseSCCs(scc, groupToMemberGraph)
-
-		// Track reachability with distances (1 = direct member, >1 = indirect)
-		sccReach := make([]map[int]int, len(dag.Nodes))
-		for i := range dag.Nodes {
-			sccReach[i] = make(map[int]int, 4)
-			sccReach[i][i] = 0 // can reach self at distance 0
-		}
-
-		// Process in forward topological order since we want to build up distances from direct members
-		topo := graph.TopoSortDAG(dag)
-		for _, sccIdx := range topo {
-			for succ := range dag.Edges[sccIdx] {
-				if _, seen := sccReach[sccIdx][succ]; seen {
-					continue
-				}
-				// Mark direct edge with distance 1
-				sccReach[sccIdx][succ] = 1
-				// Add all reachable nodes from successor with increased distance
-				for r, d := range sccReach[succ] {
-					newDist := d + 1
-					if existing, exists := sccReach[sccIdx][r]; !exists || newDist < existing {
-						sccReach[sccIdx][r] = newDist
-					}
-				}
-			}
-		}
-
-		groupList := make([]engine.AttributeValue, 0, 32)
-		for i, sccNodes := range dag.Nodes {
-			for _, group := range sccNodes {
-				groupList = groupList[:0]
-
-				// Collect members based on distance
-				for reachIdx, distance := range sccReach[i] {
-					if distance > 1 { // Only collect indirect members (distance > 1)
-						for _, member := range dag.Nodes[reachIdx] {
-							if member == group {
-								continue
-							}
-							if dn := member.OneAttr(engine.DistinguishedName); dn != nil {
-								groupList = append(groupList, dn)
-							}
-						}
-					}
-				}
-
-				if len(groupList) > 0 {
-					group.Set(MemberOfIndirect, groupList...)
-				}
-			}
-		}
-	},
+	LoaderID.AddNodePatchProcessor(applyIndirectMemberOfPatches,
 		"MemberOfIndirect resolution",
 		engine.AfterMerge,
 	)
