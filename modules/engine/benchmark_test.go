@@ -285,6 +285,33 @@ func BenchmarkFindOrAddAdjacentSIDFoundMiss(b *testing.B) {
 	}
 }
 
+func BenchmarkFindAdjacentSIDUniqueHit(b *testing.B) {
+	graph := NewIndexedGraph()
+	relative := NewNode(
+		Name, NV("relative"),
+		Type, NodeTypeUser.ValueString(),
+		DomainContext, NV("DC=example,DC=com"),
+		DataSource, NV("EXAMPLE"),
+	)
+	graph.Add(relative)
+
+	sid := benchmarkMustSID("S-1-5-21-111-222-333-444")
+	existing := NewNode(
+		Name, NV("existing"),
+		ObjectSid, NV(sid),
+	)
+	graph.Add(existing)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		node, found := graph.FindAdjacentSID(sid, relative)
+		if !found || node != existing {
+			b.Fatal("expected existing global SID node")
+		}
+	}
+}
+
 func BenchmarkGraphIterate(b *testing.B) {
 	graph := NewIndexedGraph()
 	for i := 0; i < 5000; i++ {
@@ -327,6 +354,71 @@ func BenchmarkGraphIterateParallelStable(b *testing.B) {
 		graph.IterateParallelStable(func(*Node) bool {
 			return true
 		}, 0)
+	}
+}
+
+func BenchmarkFrozenGraphFind(b *testing.B) {
+	graph := NewIndexedGraph()
+	for i := 0; i < 5000; i++ {
+		graph.Add(benchmarkNamedNode(i))
+	}
+	view := graph.Freeze()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		node, found := view.Find(Name, NV("node-4242"))
+		if !found || node == nil {
+			b.Fatal("expected node")
+		}
+	}
+}
+
+func BenchmarkFrozenGraphFindTwo(b *testing.B) {
+	graph := NewIndexedGraph()
+	for i := 0; i < 5000; i++ {
+		graph.Add(NewNode(
+			Name, NV(fmt.Sprintf("node-%d", i)),
+			SAMAccountName, NV(fmt.Sprintf("node-%d", i)),
+		))
+	}
+	view := graph.Freeze()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		node, found := view.FindTwo(Name, NV("node-4242"), SAMAccountName, NV("node-4242"))
+		if !found || node == nil {
+			b.Fatal("expected node")
+		}
+	}
+}
+
+func BenchmarkFrozenGraphFindAdjacentSID(b *testing.B) {
+	graph := NewIndexedGraph()
+	relative := NewNode(
+		Name, NV("relative"),
+		Type, NodeTypeUser.ValueString(),
+		DomainContext, NV("DC=example,DC=com"),
+		DataSource, NV("EXAMPLE"),
+	)
+	graph.Add(relative)
+
+	sid := benchmarkMustSID("S-1-5-21-111-222-333-444")
+	existing := NewNode(
+		Name, NV("existing"),
+		ObjectSid, NV(sid),
+	)
+	graph.Add(existing)
+	view := graph.Freeze()
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		node, found := view.FindAdjacentSID(sid, relative)
+		if !found || node != existing {
+			b.Fatal("expected existing global SID node")
+		}
 	}
 }
 
@@ -432,6 +524,38 @@ func BenchmarkSetEdgeMerge(b *testing.B) {
 	}
 }
 
+func BenchmarkNodeGet(b *testing.B) {
+	node := NewNode(
+		Name, NV("alpha"),
+		Description, NV("desc"),
+		SAMAccountName, NV("ALPHA"),
+	)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, found := node.get(Name); !found {
+			b.Fatal("expected attribute")
+		}
+	}
+}
+
+func BenchmarkAttributesAndValuesGet(b *testing.B) {
+	node := NewNode(
+		Name, NV("alpha"),
+		Description, NV("desc"),
+		SAMAccountName, NV("ALPHA"),
+	)
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		if _, found := node.values.Get(Name); !found {
+			b.Fatal("expected attribute")
+		}
+	}
+}
+
 func BenchmarkNodeSetFlex(b *testing.B) {
 	node := NewNode()
 
@@ -445,6 +569,22 @@ func BenchmarkNodeSetFlex(b *testing.B) {
 			Description, "Node Description",
 			SAMAccountName, "ALPHA",
 		)
+	}
+}
+
+func BenchmarkNodePatchSetApply(b *testing.B) {
+	graph := NewIndexedGraph()
+	node := benchmarkNamedNode(1)
+	graph.Add(node)
+
+	var patch NodePatchSet
+	patch.SetFlex(node, Description, NV("patched"))
+	patch.AddTag(node, "bench")
+
+	b.ResetTimer()
+	b.ReportAllocs()
+	for i := 0; i < b.N; i++ {
+		patch.Apply(graph)
 	}
 }
 
