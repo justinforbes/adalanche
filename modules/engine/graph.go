@@ -17,6 +17,9 @@ import (
 type typestatistics [256]int
 
 type NodeIndex uint32
+
+const invalidNodeIndex = ^NodeIndex(0)
+
 type EdgeCombo uint16
 
 type IndexedGraph struct {
@@ -348,6 +351,9 @@ func (os *IndexedGraph) IndexToNode(id NodeIndex) (*Node, bool) {
 }
 
 func (os *IndexedGraph) NodeToIndex(node *Node) (NodeIndex, bool) {
+	if node.graphIndex != invalidNodeIndex {
+		return node.graphIndex, true
+	}
 	return os.nodeLookup.Load(node)
 }
 
@@ -478,7 +484,9 @@ func (os *IndexedGraph) Merge(attrtomerge, singleattrs []Attribute, source *Node
 }
 
 func (os *IndexedGraph) add(newNode *Node) {
-	if _, found := os.nodeLookup.LoadOrStore(newNode, NodeIndex(len(os.nodes))); !found {
+	index := NodeIndex(len(os.nodes))
+	if _, found := os.nodeLookup.LoadOrStore(newNode, index); !found {
+		newNode.graphIndex = index
 		if os.DefaultValues != nil {
 			newNode.setFlex(os.DefaultValues...)
 		}
@@ -492,7 +500,9 @@ func (os *IndexedGraph) add(newNode *Node) {
 
 func (os *IndexedGraph) AddRelaxed(newNode *Node) {
 	os.nodeMutex.Lock()
-	if _, found := os.nodeLookup.LoadOrStore(newNode, NodeIndex(len(os.nodes))); !found {
+	index := NodeIndex(len(os.nodes))
+	if _, found := os.nodeLookup.LoadOrStore(newNode, index); !found {
+		newNode.graphIndex = index
 		if os.DefaultValues != nil {
 			newNode.setFlex(os.DefaultValues...)
 		}

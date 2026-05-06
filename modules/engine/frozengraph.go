@@ -14,11 +14,10 @@ type frozenEdge struct {
 }
 
 type FrozenGraph struct {
-	graph       *IndexedGraph
-	root        *Node
-	nodes       []*Node
-	nodeIndexes map[*Node]NodeIndex
-	edges       [2][][]frozenEdge
+	graph *IndexedGraph
+	root  *Node
+	nodes []*Node
+	edges [2][][]frozenEdge
 }
 
 func (g *IndexedGraph) Freeze() *FrozenGraph {
@@ -29,33 +28,59 @@ func (g *IndexedGraph) Freeze() *FrozenGraph {
 	fg.nodes = append([]*Node(nil), g.nodes...)
 	g.nodeMutex.RUnlock()
 
-	fg.nodeIndexes = make(map[*Node]NodeIndex, len(fg.nodes))
-	for i, node := range fg.nodes {
-		fg.nodeIndexes[node] = NodeIndex(i)
-	}
-
 	g.edgeMutex.RLock()
 	g.edgeComboMutex.RLock()
 	for direction := range fg.edges {
-		fg.edges[direction] = make([][]frozenEdge, len(fg.nodes))
-		for from, toMap := range g.edges[direction] {
-			if len(toMap) == 0 {
-				continue
-			}
-			adjacency := make([]frozenEdge, 0, len(toMap))
-			for target, edgeCombo := range toMap {
-				adjacency = append(adjacency, frozenEdge{
-					target: target,
-					edge:   g.edgeCombos[edgeCombo],
-				})
-			}
-			fg.edges[direction][from] = adjacency
-		}
+		fg.edges[direction] = freezeAdjacency(g.edges[direction], g.edgeCombos, len(fg.nodes))
 	}
 	g.edgeComboMutex.RUnlock()
 	g.edgeMutex.RUnlock()
 
 	return fg
+}
+
+func freezeAdjacency(edges map[NodeIndex]map[NodeIndex]EdgeCombo, combos []EdgeBitmap, nodeCount int) [][]frozenEdge {
+	adjacency := make([][]frozenEdge, nodeCount)
+	if len(edges) == 0 {
+		return adjacency
+	}
+
+	counts := make([]int, nodeCount)
+	totalEdges := 0
+	for from, toMap := range edges {
+		if len(toMap) == 0 {
+			continue
+		}
+		size := len(toMap)
+		counts[from] = size
+		totalEdges += size
+	}
+	if totalEdges == 0 {
+		return adjacency
+	}
+
+	allEdges := make([]frozenEdge, totalEdges)
+	offset := 0
+	for from, count := range counts {
+		if count == 0 {
+			continue
+		}
+		adjacency[from] = allEdges[offset : offset+count]
+		offset += count
+	}
+
+	for from, toMap := range edges {
+		next := 0
+		for target, edgeCombo := range toMap {
+			adjacency[from][next] = frozenEdge{
+				target: target,
+				edge:   combos[edgeCombo],
+			}
+			next++
+		}
+	}
+
+	return adjacency
 }
 
 func (fg *FrozenGraph) IndexedGraph() *IndexedGraph {
@@ -138,8 +163,11 @@ func (fg *FrozenGraph) IterateEdges(node *Node, direction EdgeDirection, iter fu
 		return
 	}
 
-	index, ok := fg.nodeIndexes[node]
-	if !ok {
+	index := node.graphIndex
+	if index == invalidNodeIndex {
+		return
+	}
+	if int(index) >= len(fg.nodes) {
 		return
 	}
 

@@ -35,6 +35,7 @@ type Node struct {
 	sdcache    *SecurityDescriptor
 	parent     *Node
 	sid        atomic.Value // windowssecurity.SID
+	graphIndex NodeIndex
 	children   NodeSlice
 	values     AttributesAndValues
 	objecttype NodeType
@@ -624,6 +625,7 @@ func (o *Node) Meta() map[string]string {
 }
 
 func (o *Node) init() {
+	o.graphIndex = invalidNodeIndex
 	o.values.init()
 	o.Set(AttributeNodeId, NV(uniqueNodeID.Add(1)))
 }
