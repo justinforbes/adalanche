@@ -23,6 +23,7 @@ import (
 	"github.com/gomarkdown/markdown/parser"
 	jsoniter "github.com/json-iterator/go"
 	"github.com/lkarlslund/adalanche/modules/engine"
+	"github.com/lkarlslund/adalanche/modules/profiling"
 	"github.com/lkarlslund/adalanche/modules/ui"
 )
 
@@ -267,6 +268,7 @@ func (ws *WebService) Analyze(paths ...string) error {
 	}
 
 	ws.status = Analyzing
+	defer profiling.StopAfterProcessing()
 
 	var err error
 	ws.SuperGraph, err = engine.Run(paths...)

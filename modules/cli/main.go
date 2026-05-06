@@ -2,17 +2,12 @@ package cli
 
 import (
 	"fmt"
-	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"path/filepath"
-	"runtime/pprof"
 	"strings"
-	"sync"
 	"time"
 
-	"github.com/felixge/fgprof"
-	"github.com/felixge/fgtrace"
+	"github.com/lkarlslund/adalanche/modules/profiling"
 	"github.com/lkarlslund/adalanche/modules/ui"
 	"github.com/lkarlslund/adalanche/modules/version"
 	"github.com/spf13/cobra"
@@ -38,9 +33,9 @@ var (
 
 	embeddedprofiler  = Root.Flags().Bool("embeddedprofiler", false, "Start embedded Go profiler on localhost:6060")
 	cpuprofile        = Root.Flags().Bool("cpuprofile", false, "Save CPU profile from start to end of processing in datapath")
-	cpuprofiletimeout = Root.Flags().Int32("cpuprofiletimeout", 0, "CPU profiling timeout in seconds (0 means no timeout)")
-	memprofile        = Root.Flags().Bool("memprofile", false, "Save CPU profile from start to end of processing in datapath")
-	memprofiletimeout = Root.Flags().Int32("memprofiletimeout", 0, "CPU profiling timeout in seconds (0 means no timeout)")
+	cpuprofiletimeout = Root.Flags().Int32("cpuprofiletimeout", 0, "CPU profiling timeout in seconds (0 means no timeout, -1 means stop when data processing ends)")
+	memprofile        = Root.Flags().Bool("memprofile", false, "Save memory profile from start to end of processing in datapath")
+	memprofiletimeout = Root.Flags().Int32("memprofiletimeout", 0, "Memory profiling timeout in seconds (0 means no timeout, -1 means stop when data processing ends)")
 	dofgtrace         = Root.Flags().Bool("fgtrace", false, "Save CPU fgtrace start to end of processing in datapath")
 	dofgprof          = Root.Flags().Bool("fgprof", false, "Save CPU fgprof start to end of processing in datapath")
 
@@ -56,12 +51,7 @@ var (
 		},
 	}
 
-	OverrideArgs   []string
-	stopcpuprofile = make(chan bool, 5)
-	stopmemprofile = make(chan bool, 5)
-	stopfgtrace    = make(chan bool, 5)
-	stopfgprof     = make(chan bool, 5)
-	profilewriters sync.WaitGroup
+	OverrideArgs []string
 )
 
 func bindFlags(cmd *cobra.Command) {
@@ -139,120 +129,6 @@ func init() {
 
 		ui.Info().Msg(version.VersionString())
 
-		if *embeddedprofiler {
-			go func() {
-				port := 6060
-				for {
-					err := http.ListenAndServe(fmt.Sprintf("localhost:%v", port), nil)
-					if err != nil {
-						ui.Error().Msgf("Profiling listener failed: %v, trying with new port", err)
-						port++
-					} else {
-						break
-					}
-				}
-				ui.Info().Msgf("Profiling listener started on port %v", port)
-			}()
-		}
-
-		if *dofgprof {
-			tracefilename := filepath.Join(*Datapath, "adalanche-fgprof-"+time.Now().Format("06010215040506")+".json")
-			tracefile, err := os.Create(tracefilename)
-			if err != nil {
-				ui.Fatal().Msgf("Error creating fgprof file %v: %v", tracefilename, err)
-			}
-			tracestopper := fgprof.Start(tracefile, fgprof.FormatPprof)
-			profilewriters.Add(1)
-
-			go func() {
-				<-stopfgprof
-				err = tracestopper()
-				if err != nil {
-					ui.Error().Msgf("Problem stopping fgprof: %v", err)
-				}
-				profilewriters.Done()
-			}()
-
-			if *cpuprofiletimeout > 0 {
-				go func() {
-					<-time.After(time.Second * (time.Duration(*cpuprofiletimeout)))
-					stopfgprof <- true
-				}()
-			}
-
-		}
-
-		if *dofgtrace {
-			tracefile := filepath.Join(*Datapath, "adalanche-fgtrace-"+time.Now().Format("06010215040506")+".json")
-			trace := fgtrace.Config{Dst: fgtrace.File(tracefile)}.Trace()
-
-			profilewriters.Add(1)
-
-			go func() {
-				<-stopfgtrace
-				err = trace.Stop()
-				if err != nil {
-					ui.Error().Msgf("Problem stopping fgtrace: %v", err)
-				}
-				profilewriters.Done()
-			}()
-
-			if *cpuprofiletimeout > 0 {
-				go func() {
-					<-time.After(time.Second * (time.Duration(*cpuprofiletimeout)))
-					stopfgtrace <- true
-				}()
-			}
-
-		}
-
-		if *cpuprofile {
-			pproffile := filepath.Join(*Datapath, "adalanche-cpuprofile-"+time.Now().Format("06010215040506")+".pprof")
-			f, err := os.Create(pproffile)
-			if err != nil {
-				return fmt.Errorf("could not set up CPU profiling in file %v: %v", pproffile, err)
-			}
-			pprof.StartCPUProfile(f)
-
-			profilewriters.Add(1)
-
-			go func() {
-				<-stopcpuprofile
-				pprof.StopCPUProfile()
-				profilewriters.Done()
-			}()
-
-			if *cpuprofiletimeout > 0 {
-				go func() {
-					<-time.After(time.Second * (time.Duration(*cpuprofiletimeout)))
-					stopcpuprofile <- true
-				}()
-			}
-		}
-
-		if *memprofile {
-			pproffile := filepath.Join(*Datapath, "adalanche-memprofile-"+time.Now().Format("06010215040506")+".pprof")
-			f, err := os.Create(pproffile)
-			if err != nil {
-				return fmt.Errorf("could not set up CPU profiling in file %v: %v", pproffile, err)
-			}
-
-			profilewriters.Add(1)
-
-			go func() {
-				<-stopmemprofile
-				pprof.WriteHeapProfile(f)
-				profilewriters.Done()
-			}()
-
-			if *memprofiletimeout > 0 {
-				go func() {
-					<-time.After(time.Second * (time.Duration(*memprofiletimeout)))
-					stopmemprofile <- true
-				}()
-			}
-		}
-
 		// Ensure the data folder is available
 		if _, err := os.Stat(*Datapath); os.IsNotExist(err) {
 			err = os.MkdirAll(*Datapath, 0711)
@@ -267,14 +143,24 @@ func init() {
 			}
 		}
 
+		err = profiling.Start(profiling.Options{
+			Datapath:          *Datapath,
+			EmbeddedProfiler:  *embeddedprofiler,
+			CPUProfile:        *cpuprofile,
+			CPUProfileTimeout: *cpuprofiletimeout,
+			MemProfile:        *memprofile,
+			MemProfileTimeout: *memprofiletimeout,
+			FGTrace:           *dofgtrace,
+			FGProf:            *dofgprof,
+		})
+		if err != nil {
+			return err
+		}
+
 		return nil
 	}
 	Root.PersistentPostRunE = func(cmd *cobra.Command, args []string) error {
-		stopfgtrace <- true
-		stopfgprof <- true
-		stopcpuprofile <- true
-		stopmemprofile <- true
-		profilewriters.Wait()
+		profiling.StopAll()
 		return nil
 	}
 }
