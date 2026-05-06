@@ -349,12 +349,13 @@
                 Graph Visualization
               </summary>
               <div class="p-1">
-                <div>
+                <div x-data="{ graphlayout: $persist('wasm.packed_separated_cluster_visibility').as('ui.graph.layout').using(window.backendPersist) }">
                   <div class="d-flex align-items-center gap-2">
                     <label for="graphlayout" class="form-label mb-0 flex-shrink-0">Layout</label>
                     <select
                       class="form-control"
                       id="graphlayout"
+                      x-model="graphlayout"
                     >
                     </select>
                   </div>
@@ -390,6 +391,21 @@
                       <option value="equal">All same size</option>
                       <option value="incoming">Incoming edges</option>
                       <option value="outgoing">Outgoing edges</option>
+                    </select>
+                  </div>
+                </div>
+
+                <div class="mb-1" x-data="{ edgewidth: $persist('flow').as('graph.edgewidth').using(window.backendPersist) }">
+                  <div class="d-flex align-items-center gap-2">
+                    <label for="edgewidth" class="form-label mb-0 flex-shrink-0">Edge width</label>
+                    <select
+                      class="form-control"
+                      id="edgewidth"
+                      x-model="edgewidth"
+                      x-on:change="if (window.graph) refreshGraphTheme()"
+                    >
+                      <option value="thin">Thin</option>
+                      <option value="flow">Flow based</option>
                     </select>
                   </div>
                 </div>

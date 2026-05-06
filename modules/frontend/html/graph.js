@@ -355,8 +355,16 @@ function graphLayoutOptionValues() {
   return {};
 }
 
+function persistPreference(key, value) {
+  if (window.backendPersist && typeof window.backendPersist.setItem === "function") {
+    window.backendPersist.setItem(key, JSON.stringify(value));
+    return;
+  }
+  setpref(key, value);
+}
+
 function persistGraphLayoutOptionValues(values) {
-  setpref(GRAPH_LAYOUT_OPTIONS_PREF, values);
+  persistPreference(GRAPH_LAYOUT_OPTIONS_PREF, values);
 }
 
 function coerceLayoutOptionValue(option, rawValue) {
@@ -584,6 +592,10 @@ function nodeThemeTextColor() {
   return translateAutoTheme(getpref("theme", "auto")) === "dark" ? "white" : "black";
 }
 
+function edgeWidthMode() {
+  return String(getpref("graph.edgewidth", "flow") || "flow").toLowerCase();
+}
+
 function graphTheme() {
   const dark = translateAutoTheme(getpref("theme", "auto")) === "dark";
   return {
@@ -681,6 +693,7 @@ function applyEdgeStyles(targetGraph) {
   if (!targetGraph) {
     return;
   }
+  const widthMode = edgeWidthMode();
   targetGraph.batch(function () {
     targetGraph.edgeIds().forEach(function (edgeId) {
       const data = targetGraph.edgeData.get(edgeId);
@@ -688,7 +701,9 @@ function applyEdgeStyles(targetGraph) {
         return;
       }
       const flow = Number(data.flow);
-      const edgeWidth = Number.isFinite(flow) && flow > 0 ? 1 + Math.log(flow) : 1;
+      const edgeWidth = widthMode === "thin"
+        ? 1
+        : (Number.isFinite(flow) && flow > 0 ? 1 + Math.log(flow) : 1);
       const baseColor = getEdgeColor(data);
       data.baseColor = baseColor;
       data.baseWidth = edgeWidth;
@@ -1369,23 +1384,14 @@ function createAdalancheGraph(elements) {
 
 function selectedGraphLayout() {
   const preferred = String(getpref(GRAPH_LAYOUT_PREF, DEFAULT_GRAPH_LAYOUT) || "").trim();
-  const select = graphLayoutSelect();
   if (preferred) {
     return preferred;
   }
+  const select = graphLayoutSelect();
   if (select && select.value) {
     return select.value;
   }
   return preferred || DEFAULT_GRAPH_LAYOUT;
-}
-
-function syncGraphLayoutSelection(layoutKey) {
-  const key = String(layoutKey || "").trim() || DEFAULT_GRAPH_LAYOUT;
-  const select = graphLayoutSelect();
-  if (select && select.value !== key) {
-    select.value = key;
-  }
-  setpref(GRAPH_LAYOUT_PREF, key);
 }
 
 function updateGraphLayoutChoices() {
@@ -1393,9 +1399,13 @@ function updateGraphLayoutChoices() {
   if (!select) {
     return;
   }
-  const currentValue = String(selectedGraphLayout() || DEFAULT_GRAPH_LAYOUT);
   const definitions = graphLayoutDefinitions();
+  const layoutKeys = Object.keys(definitions);
   select.innerHTML = "";
+  if (!layoutKeys.length) {
+    return;
+  }
+  const currentValue = String(selectedGraphLayout() || DEFAULT_GRAPH_LAYOUT);
   Object.values(definitions).forEach((definition) => {
     const option = document.createElement("option");
     option.value = definition.key;
@@ -1406,10 +1416,10 @@ function updateGraphLayoutChoices() {
     select.value = currentValue;
     return;
   }
-  const firstLayout = Object.keys(definitions)[0] || DEFAULT_GRAPH_LAYOUT;
+  const firstLayout = layoutKeys[0] || DEFAULT_GRAPH_LAYOUT;
   const fallback = definitions[DEFAULT_GRAPH_LAYOUT] ? DEFAULT_GRAPH_LAYOUT : firstLayout;
   select.value = fallback;
-  setpref(GRAPH_LAYOUT_PREF, fallback);
+  persistPreference(GRAPH_LAYOUT_PREF, fallback);
 }
 
 function layoutOptionDisplayValue(option, value) {
@@ -1721,13 +1731,12 @@ async function runSelectedGraphLayout() {
 
 function initGraphLayoutUI() {
   updateGraphLayoutChoices();
-  syncGraphLayoutSelection(selectedGraphLayout());
   renderGraphLayoutOptions();
 
   const select = graphLayoutSelect();
   if (select) {
     select.addEventListener("change", () => {
-      syncGraphLayoutSelection(select.value);
+      persistPreference(GRAPH_LAYOUT_PREF, select.value || DEFAULT_GRAPH_LAYOUT);
       renderGraphLayoutOptions();
       if (window.graph) {
         runSelectedGraphLayout();
@@ -1757,7 +1766,11 @@ function initGraphLayoutUI() {
       });
       const currentLayout = selectedGraphLayout();
       if (!graphLayoutDefinition(currentLayout)) {
-        syncGraphLayoutSelection(DEFAULT_GRAPH_LAYOUT);
+        persistPreference(GRAPH_LAYOUT_PREF, DEFAULT_GRAPH_LAYOUT);
+        const select = graphLayoutSelect();
+        if (select) {
+          select.value = DEFAULT_GRAPH_LAYOUT;
+        }
         renderGraphLayoutOptions();
       }
       if (graph && (graphState.layoutPending || graphNeedsSeedLayout(graph))) {

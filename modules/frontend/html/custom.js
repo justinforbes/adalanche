@@ -27,6 +27,10 @@ document.addEventListener("preferences.loaded", applyPreferredTheme);
 document.addEventListener("preferences.updated", (event) => {
   if (event?.detail?.key === "theme") {
     applyPreferredTheme();
+    return;
+  }
+  if (event?.detail?.key === "graph.edgewidth" && window.graph) {
+    refreshGraphTheme();
   }
 });
 
