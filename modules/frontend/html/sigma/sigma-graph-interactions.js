@@ -277,6 +277,7 @@
 
     function updateHoveredEdge(point, originalEvent) {
       if (!point) return;
+      const clientPosition = RenderMetrics.eventClientPosition(originalEvent);
       if (graph.hoveredNodeId) {
         if (graph.hoveredEdgeId) {
           debugLog("edge.leave", { edgeId: graph.hoveredEdgeId });
@@ -284,19 +285,32 @@
             edgeId: graph.hoveredEdgeId,
             hovered: false,
             originalEvent: originalEvent || {},
+            viewportPosition: point,
+            clientPosition,
           });
         }
         return;
       }
       const nextEdgeId = graph.getEdgeAtPosition(point.x, point.y, EDGE_HIT_TOLERANCE_PX) || "";
       const prevEdgeId = String(graph.hoveredEdgeId || "");
-      if (prevEdgeId === nextEdgeId) return;
+      if (prevEdgeId && prevEdgeId === nextEdgeId) {
+        graph.notify("edgehoverchanged", {
+          edgeId: nextEdgeId,
+          hovered: true,
+          originalEvent: originalEvent || {},
+          viewportPosition: point,
+          clientPosition,
+        });
+        return;
+      }
       if (prevEdgeId) {
         debugLog("edge.leave", { edgeId: prevEdgeId });
         graph.notify("edgehoverchanged", {
           edgeId: prevEdgeId,
           hovered: false,
           originalEvent: originalEvent || {},
+          viewportPosition: point,
+          clientPosition,
         });
       }
       if (nextEdgeId) {
@@ -305,6 +319,8 @@
           edgeId: nextEdgeId,
           hovered: true,
           originalEvent: originalEvent || {},
+          viewportPosition: point,
+          clientPosition,
         });
       }
     }

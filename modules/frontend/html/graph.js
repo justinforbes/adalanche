@@ -6,6 +6,7 @@ const graphState = {
   selectedEdgeId: "",
   highlightedEdgeIds: new Set(),
   contextMenu: null,
+  edgeHoverCard: null,
   layoutConnector: null,
   layoutConnectorReady: false,
   layoutDefinitions: {},
@@ -93,27 +94,224 @@ function graphPositionSummary(positions) {
   };
 }
 
-const iconMap = new Map([
-  ["Person", "icons/person-fill.svg"],
-  ["Group", "icons/people-fill.svg"],
-  ["Computer", "icons/tv-fill.svg"],
-  ["Machine", "icons/tv-fill.svg"],
-  ["ms-DS-Managed-Service-Account", "icons/manage_accounts_black_24dp.svg"],
-  ["ms-DS-Group-Managed-ServiceAccount", "icons/manage_accounts_black_24dp.svg"],
-  ["ms-DS-Group-Managed-Service-Account", "icons/manage_accounts_black_24dp.svg"],
-  ["Foreign-Security-Principal", "icons/badge_black_24dp.svg"],
-  ["Service", "icons/service.svg"],
-  ["CallableService", "icons/service.svg"],
-  ["Directory", "icons/source_black_24dp.svg"],
-  ["File", "icons/article_black_24dp.svg"],
-  ["Executable", "icons/binary-code.svg"],
-  ["Group-Policy-Container", "icons/gpo.svg"],
-  ["Organizational-Unit", "icons/source_black_24dp.svg"],
-  ["Container", "icons/folder_black_24dp.svg"],
-  ["PKI-Certificate-Template", "icons/certificate.svg"],
-  ["MS-PKI-Certificate-Template", "icons/certificate.svg"],
-  ["DNS-Node", "icons/dns.svg"],
-]);
+const iconMap = new Map();
+const nodeLegendRegistry = new Map();
+const edgeColorRules = [];
+let nodeLegendMetadataReady = null;
+
+function clearNodeLegendEntries() {
+  iconMap.clear();
+  nodeLegendRegistry.clear();
+}
+
+function registerNodeLegendEntry(type, config) {
+  const key = String(type || "").trim();
+  if (!key) {
+    return;
+  }
+  const entry = {
+    type: key,
+    label: String((config && config.label) || key),
+    color: config && config.color ? String(config.color) : "",
+    icon: config && config.icon ? String(config.icon) : "",
+    description: config && config.description ? String(config.description) : "",
+  };
+  nodeLegendRegistry.set(key, entry);
+  if (entry.icon) {
+    iconMap.set(key, entry.icon);
+  }
+}
+
+function registerEdgeColorRule(config) {
+  const methods = Array.isArray(config && config.methods)
+    ? config.methods.map((method) => String(method || "").trim()).filter(Boolean)
+    : [];
+  if (!methods.length) {
+    return;
+  }
+  edgeColorRules.push({
+    methods,
+    color: String((config && config.color) || ""),
+    label: String((config && config.label) || methods.join(", ")),
+    description: String((config && config.description) || ""),
+    priority: Number(config && config.priority) || 0,
+  });
+  edgeColorRules.sort((left, right) => Number(right.priority || 0) - Number(left.priority || 0));
+}
+
+function registerDefaultNodeLegendEntries() {
+  registerNodeLegendEntry("Person", {
+    color: "#16a34a",
+    icon: "icons/person-fill.svg",
+    description: "User and identity principals.",
+  });
+  registerNodeLegendEntry("Group", {
+    color: "#f59e0b",
+    icon: "icons/people-fill.svg",
+    description: "Security and distribution groups.",
+  });
+  registerNodeLegendEntry("Computer", {
+    color: "#90ee90",
+    icon: "icons/tv-fill.svg",
+    description: "Computer accounts and workstation objects.",
+  });
+  registerNodeLegendEntry("Machine", {
+    color: "#0f766e",
+    icon: "icons/tv-fill.svg",
+    description: "Local machine entities outside directory computer accounts.",
+  });
+  registerNodeLegendEntry("ms-DS-Managed-Service-Account", {
+    color: "#90ee90",
+    icon: "icons/manage_accounts_black_24dp.svg",
+    description: "Managed service accounts.",
+  });
+  registerNodeLegendEntry("ms-DS-Group-Managed-Service-Account", {
+    color: "#90ee90",
+    icon: "icons/manage_accounts_black_24dp.svg",
+    description: "Group managed service accounts.",
+  });
+  registerNodeLegendEntry("Foreign-Security-Principal", {
+    color: "#90ee90",
+    icon: "icons/badge_black_24dp.svg",
+    description: "External or foreign security principals.",
+  });
+  registerNodeLegendEntry("Service", {
+    color: "#90ee90",
+    icon: "icons/service.svg",
+    description: "Service identities and service definitions.",
+  });
+  registerNodeLegendEntry("CallableService", {
+    color: "#90ee90",
+    icon: "icons/service.svg",
+    description: "Callable service endpoints.",
+  });
+  registerNodeLegendEntry("Directory", {
+    color: "#93c5fd",
+    icon: "icons/source_black_24dp.svg",
+    description: "Directory or folder-like filesystem objects.",
+  });
+  registerNodeLegendEntry("File", {
+    color: "#93c5fd",
+    icon: "icons/article_black_24dp.svg",
+    description: "File objects.",
+  });
+  registerNodeLegendEntry("Executable", {
+    color: "#90ee90",
+    icon: "icons/binary-code.svg",
+    description: "Executable files and binaries.",
+  });
+  registerNodeLegendEntry("Group-Policy-Container", {
+    color: "#9333ea",
+    icon: "icons/gpo.svg",
+    description: "Group Policy containers.",
+  });
+  registerNodeLegendEntry("Organizational-Unit", {
+    color: "#d1d5db",
+    icon: "icons/source_black_24dp.svg",
+    description: "Organizational units and directory containers.",
+  });
+  registerNodeLegendEntry("Container", {
+    color: "#d1d5db",
+    icon: "icons/folder_black_24dp.svg",
+    description: "Generic directory containers.",
+  });
+  registerNodeLegendEntry("PKI-Certificate-Template", {
+    color: "#f9a8d4",
+    icon: "icons/certificate.svg",
+    description: "Certificate templates.",
+  });
+  registerNodeLegendEntry("MS-PKI-Certificate-Template", {
+    color: "#f9a8d4",
+    icon: "icons/certificate.svg",
+    description: "Certificate templates.",
+  });
+  registerNodeLegendEntry("DNS-Node", {
+    color: "",
+    icon: "icons/dns.svg",
+    description: "DNS records and nodes.",
+  });
+}
+
+function registerDefaultEdgeColorRules() {
+  registerEdgeColorRule({
+    methods: ["MemberOfGroup"],
+    color: "#f59e0b",
+    label: "Group Membership",
+    description: "Direct group membership relationships.",
+    priority: 100,
+  });
+  registerEdgeColorRule({
+    methods: ["MemberOfGroupIndirect"],
+    color: "#f97316",
+    label: "Indirect Group Membership",
+    description: "Transitive or nested group membership relationships.",
+    priority: 90,
+  });
+  registerEdgeColorRule({
+    methods: ["ForeignIdentity"],
+    color: "#90ee90",
+    label: "Foreign Identity",
+    description: "Relationships involving foreign security identities.",
+    priority: 80,
+  });
+  registerEdgeColorRule({
+    methods: ["ResetPassword"],
+    color: "#ef4444",
+    label: "Reset Password",
+    description: "Reset-password rights or paths.",
+    priority: 70,
+  });
+  registerEdgeColorRule({
+    methods: ["AddMember"],
+    color: "#fde047",
+    label: "Add Member",
+    description: "Ability to add principals to groups.",
+    priority: 60,
+  });
+  registerEdgeColorRule({
+    methods: ["TakeOwnership", "WriteDACL"],
+    color: "#93c5fd",
+    label: "Ownership or ACL Control",
+    description: "Take ownership or modify permissions on the target.",
+    priority: 50,
+  });
+  registerEdgeColorRule({
+    methods: ["Owns"],
+    color: "#2563eb",
+    label: "Owns",
+    description: "Object ownership relationships.",
+    priority: 40,
+  });
+}
+
+registerDefaultEdgeColorRules();
+
+function applyNodeTypeMetadata(typeMetadata) {
+  clearNodeLegendEntries();
+  Object.entries(typeMetadata || {}).forEach(([lookup, entry]) => {
+    registerNodeLegendEntry(lookup, {
+      label: entry && entry.name ? entry.name : lookup,
+      icon: entry && entry.icon ? entry.icon : "",
+      color: entry && entry["background-color"] ? entry["background-color"] : "",
+      description: entry && entry.description ? entry.description : "",
+    });
+  });
+}
+
+function ensureNodeLegendMetadataLoaded() {
+  if (nodeLegendMetadataReady) {
+    return nodeLegendMetadataReady;
+  }
+  nodeLegendMetadataReady = fetchJSONOrThrow("backend/types")
+    .then((payload) => {
+      applyNodeTypeMetadata(payload);
+    })
+    .catch(() => {
+      clearNodeLegendEntries();
+      registerDefaultNodeLegendEntries();
+    });
+  return nodeLegendMetadataReady;
+}
 
 function byIdValue(id, def) {
   const el = document.getElementById(id);
@@ -360,42 +558,26 @@ function renderdetails(data) {
   return result;
 }
 
+function escapehtml(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#39;");
+}
+
 function getNodeType(nodeData) {
   return String(nodeData && nodeData.type ? nodeData.type : "");
 }
 
 function getNodeBaseColor(nodeData) {
   const type = getNodeType(nodeData);
-  switch (type) {
-    case "Group":
-      return "#f59e0b";
-    case "Person":
-      return "#16a34a";
-    case "ms-DS-Managed-Service-Account":
-    case "ms-DS-Group-Managed-ServiceAccount":
-    case "ms-DS-Group-Managed-Service-Account":
-    case "Foreign-Security-Principal":
-    case "Service":
-    case "CallableService":
-    case "Executable":
-    case "Computer":
-      return "#90ee90";
-    case "Machine":
-      return "#0f766e";
-    case "Directory":
-    case "File":
-      return "#93c5fd";
-    case "Group-Policy-Container":
-      return "#9333ea";
-    case "Organizational-Unit":
-    case "Container":
-      return "#d1d5db";
-    case "PKI-Certificate-Template":
-    case "MS-PKI-Certificate-Template":
-      return "#f9a8d4";
-    default:
-      return translateAutoTheme(getpref("theme", "auto")) === "dark" ? "#6c757d" : "#8b949e";
+  const entry = nodeLegendRegistry.get(type);
+  if (entry && entry.color) {
+    return entry.color;
   }
+  return translateAutoTheme(getpref("theme", "auto")) === "dark" ? "#6c757d" : "#8b949e";
 }
 
 function nodeThemeTextColor() {
@@ -428,7 +610,7 @@ function graphTheme() {
       curveStyle: "straight",
     },
     hoveredEdge: {
-      label: byIdChecked("showedgelabels"),
+      label: false,
       color: dark ? "#e9ecef" : "#111827",
       fontSize: 12,
       textBackgroundColor: dark ? "#0f1216" : "#ffffff",
@@ -469,24 +651,13 @@ function computeNodeVisualPatch(nodeData) {
 }
 
 function getEdgeColor(data) {
-  var color = translateAutoTheme(getpref("theme", "auto")) === "dark" ? "#ffffff" : "#000000";
   const methods = Array.isArray(data && data.methods) ? data.methods : [];
-  if (methods.includes("MemberOfGroup")) {
-    color = "#f59e0b";
-  } else if (methods.includes("MemberOfGroupIndirect")) {
-    color = "#f97316";
-  } else if (methods.includes("ForeignIdentity")) {
-    color = "#90ee90";
-  } else if (methods.includes("ResetPassword")) {
-    color = "#ef4444";
-  } else if (methods.includes("AddMember")) {
-    color = "#fde047";
-  } else if (methods.includes("TakeOwnership") || methods.includes("WriteDACL")) {
-    color = "#93c5fd";
-  } else if (methods.includes("Owns")) {
-    color = "#2563eb";
+  for (const rule of edgeColorRules) {
+    if (rule.methods.some((method) => methods.includes(method))) {
+      return rule.color;
+    }
   }
-  return color;
+  return translateAutoTheme(getpref("theme", "auto")) === "dark" ? "#ffffff" : "#000000";
 }
 
 function clearHighlightedEdges() {
@@ -596,6 +767,183 @@ function hideGraphContextMenu() {
   }
   graphState.contextMenu.style.display = "none";
   graphState.contextMenu.innerHTML = "";
+}
+
+function ensureEdgeHoverCard() {
+  if (graphState.edgeHoverCard) {
+    return graphState.edgeHoverCard;
+  }
+  const card = document.createElement("div");
+  card.id = "graph-edge-hover-card";
+  card.className = "card shadow-sm";
+  card.style.position = "fixed";
+  card.style.display = "none";
+  card.style.pointerEvents = "none";
+  card.style.zIndex = "1080";
+  card.style.maxWidth = "22rem";
+  card.style.minWidth = "14rem";
+  card.style.background = translateAutoTheme(getpref("theme", "auto")) === "dark" ? "rgba(15, 18, 22, 0.96)" : "rgba(255, 255, 255, 0.96)";
+  card.style.color = translateAutoTheme(getpref("theme", "auto")) === "dark" ? "#f8f9fa" : "#111827";
+  card.style.border = "1px solid rgba(148, 163, 184, 0.35)";
+  card.style.backdropFilter = "blur(6px)";
+  document.body.appendChild(card);
+  graphState.edgeHoverCard = card;
+  return card;
+}
+
+function hideEdgeHoverCard() {
+  if (!graphState.edgeHoverCard) {
+    return;
+  }
+  graphState.edgeHoverCard.style.display = "none";
+  graphState.edgeHoverCard.innerHTML = "";
+}
+
+function updateEdgeHoverCardPosition(clientPosition) {
+  if (!graphState.edgeHoverCard || !clientPosition) {
+    return;
+  }
+  const offset = 14;
+  const margin = 12;
+  const card = graphState.edgeHoverCard;
+  card.style.left = `${Number(clientPosition.x || 0) + offset}px`;
+  card.style.top = `${Number(clientPosition.y || 0) + offset}px`;
+  const rect = card.getBoundingClientRect();
+  let left = Number(clientPosition.x || 0) + offset;
+  let top = Number(clientPosition.y || 0) + offset;
+  if (left + rect.width + margin > window.innerWidth) {
+    left = Math.max(margin, Number(clientPosition.x || 0) - rect.width - offset);
+  }
+  if (top + rect.height + margin > window.innerHeight) {
+    top = Math.max(margin, Number(clientPosition.y || 0) - rect.height - offset);
+  }
+  card.style.left = `${left}px`;
+  card.style.top = `${top}px`;
+}
+
+function showEdgeHoverCard(edgeId, clientPosition) {
+  const edgeData = graphEdgeData(edgeId);
+  if (!edgeData) {
+    hideEdgeHoverCard();
+    return;
+  }
+  const methods = Array.isArray(edgeData.methods) ? [...edgeData.methods].sort() : [];
+  if (!methods.length) {
+    hideEdgeHoverCard();
+    return;
+  }
+  const card = ensureEdgeHoverCard();
+  const body = methods.map((method) => `<li class="list-group-item py-1 px-2 border-0 bg-transparent">${escapehtml(String(method))}</li>`).join("");
+  card.innerHTML =
+    `<div class="card-body p-2">` +
+    `<div class="fw-semibold small text-uppercase opacity-75 mb-2">Edge Methods</div>` +
+    `<ul class="list-group list-group-flush small">${body}</ul>` +
+    `</div>`;
+  card.style.display = "";
+  updateEdgeHoverCardPosition(clientPosition);
+}
+
+function legendNodeEntries() {
+  return Array.from(nodeLegendRegistry.values()).sort((left, right) => left.label.localeCompare(right.label));
+}
+
+function legendEdgeEntries() {
+  return edgeColorRules.map((rule) => ({
+    color: rule.color,
+    label: rule.label,
+    methods: [...rule.methods],
+    description: rule.description,
+  }));
+}
+
+function legendSwatch(color) {
+  const fill = color || (translateAutoTheme(getpref("theme", "auto")) === "dark" ? "#6c757d" : "#8b949e");
+  return `<span class="rounded-circle border flex-shrink-0" style="display:inline-block;width:2.4rem;height:2.4rem;background:${fill};"></span>`;
+}
+
+function renderLegendWindow() {
+  const nodeItems = legendNodeEntries()
+    .map((entry) => {
+      const icon = entry.icon ? `<img src="${escapehtml(entry.icon)}" width="34" height="34" alt="">` : "";
+      const description = entry.description ? `<div class="small text-body-secondary">${escapehtml(entry.description)}</div>` : "";
+      return (
+        `<div class="card mb-2 border-0 bg-body-tertiary">` +
+        `<div class="card-body py-2 px-3 d-flex align-items-start gap-2">` +
+        `<div class="position-relative flex-shrink-0" style="width:2.75rem;height:2.75rem;">` +
+        `<div class="position-absolute top-50 start-50 translate-middle">` +
+        `${legendSwatch(entry.color)}` +
+        `</div>` +
+        `<div class="position-absolute top-50 start-50 d-flex align-items-center justify-content-center" style="width:2.125rem;height:2.125rem;transform:translate(-50%,-54%);">${icon}</div>` +
+        `</div>` +
+        `<div class="flex-grow-1">` +
+        `<div class="fw-semibold">${escapehtml(entry.label)}</div>` +
+        `<div class="small font-monospace text-body-secondary">${escapehtml(entry.type)}</div>` +
+        `${description}` +
+        `</div>` +
+        `</div>` +
+        `</div>`
+      );
+    })
+    .join("");
+
+  const edgeItems = legendEdgeEntries()
+    .map((entry) => {
+      const methods = entry.methods.map((method) => `<span class="badge text-bg-light border me-1 mb-1">${escapehtml(method)}</span>`).join("");
+      const description = entry.description ? `<div class="small text-body-secondary mt-1">${escapehtml(entry.description)}</div>` : "";
+      return (
+        `<div class="card mb-2 border-0 bg-body-tertiary">` +
+        `<div class="card-body py-2 px-3 d-flex align-items-start gap-2">` +
+        `${legendSwatch(entry.color)}` +
+        `<div class="flex-grow-1">` +
+        `<div class="fw-semibold">${escapehtml(entry.label)}</div>` +
+        `<div class="mt-1">${methods}</div>` +
+        `${description}` +
+        `</div>` +
+        `</div>` +
+        `</div>`
+      );
+    })
+    .join("");
+
+  return (
+    `<div class="container-fluid px-0">` +
+    `<div class="row g-3">` +
+    `<div class="col-12 col-xl-6">` +
+    `<div class="card border-0 shadow-sm">` +
+    `<div class="card-header fw-semibold">Node Colors and Icons</div>` +
+    `<div class="card-body pb-2">${nodeItems}</div>` +
+    `</div>` +
+    `</div>` +
+    `<div class="col-12 col-xl-6">` +
+    `<div class="card border-0 shadow-sm">` +
+    `<div class="card-header fw-semibold">Edge Colors</div>` +
+    `<div class="card-body pb-2">${edgeItems}</div>` +
+    `</div>` +
+    `</div>` +
+    `</div>` +
+    `</div>`
+  );
+}
+
+async function openLegendWindow() {
+  await ensureNodeLegendMetadataLoaded();
+  new_window("graph_legend", "Legend", renderLegendWindow(), "center", 640, 960);
+}
+
+function initGraphTools() {
+  const legendButton = document.getElementById("legendbutton");
+  if (legendButton) {
+    legendButton.addEventListener("click", openLegendWindow);
+  }
+}
+
+function initGraphToolsWhenReady() {
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", initGraphTools, { once: true });
+    return;
+  }
+  ensureNodeLegendMetadataLoaded();
+  initGraphTools();
 }
 
 function ensureGraphContextMenu() {
@@ -930,6 +1278,7 @@ function bindGraphEvents() {
 
   graph.onEdgeClick(function (evt) {
     hideGraphContextMenu();
+    hideEdgeHoverCard();
     graphState.selectedEdgeId = evt.edgeId;
     selectGraphNodes([]);
     clearHighlightedEdges();
@@ -938,6 +1287,7 @@ function bindGraphEvents() {
 
   graph.onBackgroundClick(function () {
     hideGraphContextMenu();
+    hideEdgeHoverCard();
     graphState.selectedEdgeId = "";
     selectGraphNodes([]);
   });
@@ -954,9 +1304,15 @@ function bindGraphEvents() {
   graph.onEdgeHoverChanged(function (evt) {
     if (!byIdChecked("showedgelabels")) {
       graph.clearHoveredEdges();
+      hideEdgeHoverCard();
       return;
     }
     graph.setEdgeHovered(evt.edgeId, !!evt.hovered);
+    if (evt.hovered) {
+      showEdgeHoverCard(evt.edgeId, evt.clientPosition || { x: 0, y: 0 });
+      return;
+    }
+    hideEdgeHoverCard();
   });
 }
 
@@ -988,6 +1344,7 @@ function createAdalancheGraph(elements) {
     graph.kill();
   }
   hideGraphContextMenu();
+  hideEdgeHoverCard();
   graphState.targetNodeId = "";
   graphState.selectedNodeIds = [];
   graphState.selectedEdgeId = "";
@@ -1420,7 +1777,8 @@ function initGraphLayoutUI() {
     });
 }
 
-function initgraph(data) {
+async function initgraph(data) {
+  await ensureNodeLegendMetadataLoaded();
   createAdalancheGraph(data);
   graphDebugLog("initgraph", {
     connectorReady: !!graphState.layoutConnectorReady,
@@ -1449,9 +1807,13 @@ function initGraphLayoutUIWhenReady() {
 if (typeof window.ensurePrefsLoaded === "function") {
   window.ensurePrefsLoaded()
     .catch(function () {})
-    .finally(initGraphLayoutUIWhenReady);
+    .finally(function () {
+      initGraphLayoutUIWhenReady();
+      initGraphToolsWhenReady();
+    });
 } else {
   initGraphLayoutUIWhenReady();
+  initGraphToolsWhenReady();
 }
 
 window.addEventListener("click", function (event) {

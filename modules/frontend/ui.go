@@ -70,7 +70,26 @@ func AddUIEndpoints(ws *WebService) {
 		c.JSON(200, gin.H{"success": true})
 	})
 	backend.GET("types", func(c *gin.Context) {
-		c.JSON(200, typeInfos)
+		type typeInfo struct {
+			Name            string `json:"name"`
+			Icon            string `json:"icon"`
+			BackgroundColor string `json:"background-color"`
+			Description     string `json:"description"`
+		}
+		result := make(map[string]typeInfo)
+		for _, objectType := range engine.NodeTypes() {
+			name := objectType.DisplayName
+			if name == "" {
+				name = objectType.Lookup
+			}
+			result[objectType.Lookup] = typeInfo{
+				Name:            name,
+				Icon:            objectType.Icon,
+				BackgroundColor: objectType.BackgroundColor,
+				Description:     objectType.Description,
+			}
+		}
+		c.JSON(200, result)
 	})
 	backend.GET("statistics", func(c *gin.Context) {
 		var result struct {

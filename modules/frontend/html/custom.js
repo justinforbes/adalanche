@@ -293,9 +293,7 @@ async function aqlanalyze(e) {
       );
     }
 
-    new Promise((resolve) => {
-      initgraph(data.elements);
-    });
+    await initgraph(data.elements);
 
     history.pushState(document.body.innerHTML, "adalanche");
   } catch (err) {
@@ -658,36 +656,6 @@ document.addEventListener("DOMContentLoaded", function () {
       if (treeRoot && window.Alpine && typeof window.Alpine.initTree === "function") {
         window.Alpine.initTree(treeRoot);
       }
-    });
-  }
-
-  const nodeInfoButton = document.getElementById("node-info");
-  if (nodeInfoButton) {
-    nodeInfoButton.addEventListener("click", function () {
-      /* get json data and show window on success */
-      fetchJSON("backend/nodes")
-        .then(function (data) {
-          var details = renderdetails(data);
-          new_window("node_info", "Known Nodes", details);
-        })
-        .catch(function (err) {
-          toast("API Error", "Couldn't load details:" + getErrorText(err), "error");
-        });
-    });
-  }
-
-  const edgeInfoButton = document.getElementById("edge-info");
-  if (edgeInfoButton) {
-    edgeInfoButton.addEventListener("click", function () {
-      /* get json data and show window on success */
-      fetchJSON("backend/edges")
-        .then(function (data) {
-          var details = renderdetails(data);
-          new_window("edge_info", "Known Edges", details);
-        })
-        .catch(function (err) {
-          toast("API Error", "Couldn't load details:" + getErrorText(err), "error");
-        });
     });
   }
 
