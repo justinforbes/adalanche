@@ -45,15 +45,12 @@ func freezeAdjacency(edges map[NodeIndex]map[NodeIndex]EdgeCombo, combos []EdgeB
 		return adjacency
 	}
 
-	counts := make([]int, nodeCount)
 	totalEdges := 0
-	for from, toMap := range edges {
+	for _, toMap := range edges {
 		if len(toMap) == 0 {
 			continue
 		}
-		size := len(toMap)
-		counts[from] = size
-		totalEdges += size
+		totalEdges += len(toMap)
 	}
 	if totalEdges == 0 {
 		return adjacency
@@ -61,15 +58,12 @@ func freezeAdjacency(edges map[NodeIndex]map[NodeIndex]EdgeCombo, combos []EdgeB
 
 	allEdges := make([]frozenEdge, totalEdges)
 	offset := 0
-	for from, count := range counts {
+	for from, toMap := range edges {
+		count := len(toMap)
 		if count == 0 {
 			continue
 		}
 		adjacency[from] = allEdges[offset : offset+count]
-		offset += count
-	}
-
-	for from, toMap := range edges {
 		next := 0
 		for target, edgeCombo := range toMap {
 			adjacency[from][next] = frozenEdge{
@@ -78,6 +72,7 @@ func freezeAdjacency(edges map[NodeIndex]map[NodeIndex]EdgeCombo, combos []EdgeB
 			}
 			next++
 		}
+		offset += count
 	}
 
 	return adjacency
