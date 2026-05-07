@@ -505,7 +505,9 @@ func (o *Node) Add(a Attribute, values ...AttributeValue) {
 }
 
 func (o *Node) Clear(a Attribute) {
-	o.values.Clear(a)
+	o.values.mu.Lock()
+	o.values.clear(a)
+	o.values.mu.Unlock()
 }
 
 func (o *Node) Tag(v string) {
@@ -517,6 +519,15 @@ func (o *Node) Tag(v string) {
 // FIXME performance optimization/redesign needed, but needs to work with Objects indexes
 func (o *Node) HasTag(v string) bool {
 	tags, found := o.Get(Tag)
+	return hasTag(tags, found, v)
+}
+
+func (o *Node) hasTagNoLock(v string) bool {
+	tags, found := o.values.get(Tag)
+	return hasTag(tags, found, v)
+}
+
+func hasTag(tags AttributeValues, found bool, v string) bool {
 	if !found {
 		return false
 	}
@@ -532,18 +543,30 @@ func (o *Node) HasTag(v string) bool {
 }
 
 func (o *Node) add(a Attribute, values ...AttributeValue) {
-	oldvalues, found := o.values.Get(a)
+	o.values.mu.Lock()
+	defer o.values.mu.Unlock()
+	o.addNoLock(a, AttributeValues(values))
+}
+
+func (o *Node) addNoLock(a Attribute, values AttributeValues) {
+	oldvalues, found := o.values.get(a)
 	if !found {
-		o.set(a, values...)
+		o.setNoLock(a, values)
 	} else {
 		data := make([]AttributeValue, len(oldvalues)+len(values))
 		copy(data, oldvalues)
 		copy(data[len(oldvalues):], values)
-		o.set(a, data...)
+		o.setNoLock(a, data)
 	}
 }
 
 func (o *Node) set(a Attribute, values ...AttributeValue) {
+	o.values.mu.Lock()
+	defer o.values.mu.Unlock()
+	o.setNoLock(a, AttributeValues(values))
+}
+
+func (o *Node) setNoLock(a Attribute, values AttributeValues) {
 	if a.HasFlag(Single) && len(values) > 1 {
 		ui.Warn().Msgf("Setting multiple values on non-multival attribute %v: %v", a.String(), strings.Join(AttributeValues(values).StringSlice(), ", "))
 	}
@@ -610,7 +633,7 @@ func (o *Node) set(a Attribute, values ...AttributeValue) {
 		}
 	}
 
-	o.values.Set(a, values)
+	o.values.set(a, values)
 }
 
 func (o *Node) Meta() map[string]string {

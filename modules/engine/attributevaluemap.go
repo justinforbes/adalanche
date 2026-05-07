@@ -208,21 +208,26 @@ func (avm *AttributesAndValues) Len() int {
 
 func (avm *AttributesAndValues) Clear(a Attribute) {
 	avm.mu.Lock()
-	defer avm.mu.Unlock()
+	avm.clear(a)
+	avm.mu.Unlock()
+}
+
+func (avm *AttributesAndValues) clear(a Attribute) {
 	sl, found := avm.attributes[a]
-	if found {
-		// Remove it, and we add it again below
-		weAreLast := int(sl.start+sl.length) == len(avm.values)
-		avm.values = slices.Delete(avm.values, int(sl.start), int(sl.start+sl.length))
-		if !weAreLast {
-			for k, v := range avm.attributes {
-				if v.start > sl.start {
-					avm.attributes[k] = StartLength{v.start - sl.length, v.length}
-				}
+	if !found {
+		return
+	}
+
+	weAreLast := int(sl.start+sl.length) == len(avm.values)
+	avm.values = slices.Delete(avm.values, int(sl.start), int(sl.start+sl.length))
+	if !weAreLast {
+		for k, v := range avm.attributes {
+			if v.start > sl.start {
+				avm.attributes[k] = StartLength{v.start - sl.length, v.length}
 			}
 		}
-		delete(avm.attributes, a)
 	}
+	delete(avm.attributes, a)
 }
 
 func (avm *AttributesAndValues) Iterate(f func(attr Attribute, values AttributeValues) bool) {

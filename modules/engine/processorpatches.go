@@ -67,14 +67,52 @@ func (ps *NodePatchSet) HasOperations() bool {
 }
 
 func (ps *NodePatchSet) Apply(ao *IndexedGraph) {
+	if len(ps.ops) == 0 {
+		return
+	}
+
+	firstNode := ps.ops[0].node
+	allSameNode := true
+	for _, op := range ps.ops[1:] {
+		if op.node != firstNode {
+			allSameNode = false
+			break
+		}
+	}
+	if allSameNode {
+		firstNode.values.mu.Lock()
+		applyNodePatchOps(firstNode, ps.ops)
+		firstNode.values.mu.Unlock()
+		return
+	}
+
+	grouped := make(map[*Node][]nodePatchOp, len(ps.ops))
+	order := make([]*Node, 0, len(ps.ops))
 	for _, op := range ps.ops {
+		if _, found := grouped[op.node]; !found {
+			order = append(order, op.node)
+		}
+		grouped[op.node] = append(grouped[op.node], op)
+	}
+
+	for _, node := range order {
+		node.values.mu.Lock()
+		applyNodePatchOps(node, grouped[node])
+		node.values.mu.Unlock()
+	}
+}
+
+func applyNodePatchOps(node *Node, ops []nodePatchOp) {
+	for _, op := range ops {
 		switch op.kind {
 		case nodePatchOpSet:
-			op.node.Set(op.attr, op.values...)
+			node.setNoLock(op.attr, op.values)
 		case nodePatchOpAddTag:
-			op.node.Tag(op.tag)
+			if !node.hasTagNoLock(op.tag) {
+				node.addNoLock(Tag, AttributeValues{NV(op.tag)})
+			}
 		case nodePatchOpClear:
-			op.node.Clear(op.attr)
+			node.values.clear(op.attr)
 		}
 	}
 }
