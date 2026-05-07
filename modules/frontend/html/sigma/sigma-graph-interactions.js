@@ -23,6 +23,17 @@
       listeners.push(() => target.removeEventListener(eventName, handler, options));
     }
 
+    function eventTargetsGraphSurface(event) {
+      const container = graph && graph.container;
+      if (!container || !event) return false;
+      if (typeof event.composedPath === "function") {
+        const path = event.composedPath();
+        if (Array.isArray(path) && path.includes(container)) return true;
+      }
+      const target = event.target;
+      return !!(target && typeof container.contains === "function" && container.contains(target));
+    }
+
     function handleClick(event) {
       if (graph.suppressNextClick) {
         graph.suppressNextClick = false;
@@ -120,7 +131,12 @@
 
     function handleMouseMove(event) {
       const point = graph.relativePoint(event);
-      updateHoveredEdge(point, event);
+      const onGraphSurface = eventTargetsGraphSurface(event);
+      if (onGraphSurface) {
+        updateHoveredEdge(point, event);
+      } else if (!graph.selectionState && !graph.dragState && graph.hoveredEdgeId) {
+        updateHoveredEdge(null, event);
+      }
       if (graph.selectionState) {
         const dx = Number(point.x || 0) - Number(graph.selectionState.startX || 0);
         const dy = Number(point.y || 0) - Number(graph.selectionState.startY || 0);
@@ -276,8 +292,20 @@
     }
 
     function updateHoveredEdge(point, originalEvent) {
-      if (!point) return;
       const clientPosition = RenderMetrics.eventClientPosition(originalEvent);
+      if (!point) {
+        const prevEdgeId = String(graph.hoveredEdgeId || "");
+        if (!prevEdgeId) return;
+        debugLog("edge.leave", { edgeId: prevEdgeId, reason: "pointer-left-graph-surface" });
+        graph.notify("edgehoverchanged", {
+          edgeId: prevEdgeId,
+          hovered: false,
+          originalEvent: originalEvent || {},
+          viewportPosition: null,
+          clientPosition,
+        });
+        return;
+      }
       if (graph.hoveredNodeId) {
         if (graph.hoveredEdgeId) {
           debugLog("edge.leave", { edgeId: graph.hoveredEdgeId });
