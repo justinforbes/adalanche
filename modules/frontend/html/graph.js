@@ -1009,8 +1009,13 @@ function graphNodeHtml(nodeId, fallbackLabel) {
   return rendericon(getNodeType(nodeData), nodeData) + " " + renderlabel(String(nodeData.label || fallbackLabel || nodeId));
 }
 
+function backendNodeId(nodeId) {
+  const id = String(nodeId || "");
+  return id.startsWith("n") ? id.substring(1) : id;
+}
+
 function showNodeDetails(nodeId) {
-  fetchJSONOrThrow("api/details/id/" + String(nodeId).substring(1))
+  fetchJSONOrThrow("api/details/nodeid/" + backendNodeId(nodeId))
     .then(function (data) {
       let windowname = "details_" + nodeId;
       if (prefBool("ui.open.details.in.same.window", true)) {
@@ -1028,7 +1033,7 @@ function showEdgeDetails(edgeId) {
   if (!edgeData) {
     return;
   }
-  fetchJSONOrThrow("api/edges/id/" + String(edgeData.source).substring(1) + "," + String(edgeData.target).substring(1))
+  fetchJSONOrThrow("api/edges/nodeid/" + backendNodeId(edgeData.source) + "," + backendNodeId(edgeData.target))
     .then(function (data) {
       let windowname = "edge_" + edgeData.source + "_to_" + edgeData.target;
       if (prefBool("ui.open.details.in.same.window", true)) {
@@ -1164,8 +1169,8 @@ function findroute(sourceId) {
   });
   pathprobability *= 100;
 
-  const routecontents = result.pathNodes.map((nodeId) => String(nodeId).substring(1)).join(",");
-  fetchJSONOrThrow("/api/edges/id/" + routecontents)
+  const routecontents = result.pathNodes.map((nodeId) => backendNodeId(nodeId)).join(",");
+  fetchJSONOrThrow("/api/edges/nodeid/" + routecontents)
     .then(function (data) {
       let output = "";
       for (var i = 0; i < data.length; i++) {
@@ -1233,7 +1238,7 @@ function openNodeContextMenu(nodeId, clientX, clientY) {
 }
 
 function runReachabilityQuery(nodeId, direction) {
-  fetchJSONOrThrow("api/details/id/" + String(nodeId).substring(1))
+  fetchJSONOrThrow("api/details/nodeid/" + backendNodeId(nodeId))
     .then(function (data) {
       if (data.attributes["distinguishedName"]) {
         set_query(direction === "outbound" ? "start:(distinguishedname=" + data.attributes["distinguishedName"] + ")-[]{1,3}->end:()" : "start:(distinguishedname=" + data.attributes["distinguishedName"] + ")<-[]{1,3}-end:()");
@@ -1242,7 +1247,7 @@ function runReachabilityQuery(nodeId, direction) {
       } else if (data.attributes["objectGuid"]) {
         set_query(direction === "outbound" ? "start:(objectGuid=" + data.attributes["objectGuid"] + ")-[]{1,3}->end:()" : "start:(objectGuid=" + data.attributes["objectGuid"] + ")<-[]{1,3}-end:()");
       } else {
-        set_query(direction === "outbound" ? "start:(_id=" + String(nodeId).substring(1) + ")-[]{1,3}->end:()" : "start:(_id=" + String(nodeId).substring(1) + ")<-[]{1,3}-end:()");
+        set_query(direction === "outbound" ? "start:(_id=" + backendNodeId(nodeId) + ")-[]{1,3}->end:()" : "start:(_id=" + backendNodeId(nodeId) + ")<-[]{1,3}-end:()");
       }
       aqlanalyze();
     })

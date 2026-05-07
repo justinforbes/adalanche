@@ -250,7 +250,11 @@ func apiNodeDetails(o *engine.Node, pretty bool) APINodeDetails {
 func apiEdgeDetails(g *engine.IndexedGraph, from, to *engine.Node) (APIEdgeDetails, bool) {
 	eb, found := g.GetEdge(from, to)
 	if !found {
-		return APIEdgeDetails{}, false
+		eb, found = g.GetEdge(to, from)
+		if !found {
+			return APIEdgeDetails{}, false
+		}
+		from, to = to, from
 	}
 
 	ed := APIEdgeDetails{

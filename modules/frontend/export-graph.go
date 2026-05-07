@@ -60,7 +60,7 @@ type CytoFlatElement struct {
 	Group string             `json:"group"` // nodes or edges
 }
 
-func GenerateCytoscapeJS(ao *engine.IndexedGraph, pg graph.Graph[*engine.Node, engine.EdgeBitmap], alldetails bool) (CytoGraph, error) {
+func GenerateCytoscapeJS(_ *engine.IndexedGraph, pg graph.Graph[*engine.Node, engine.EdgeBitmap], alldetails bool) (CytoGraph, error) {
 	g := CytoGraph{
 		FormatVersion:            "1.0",
 		GeneratedBy:              version.ProgramVersionShort(),
@@ -88,10 +88,7 @@ func GenerateCytoscapeJS(ao *engine.IndexedGraph, pg graph.Graph[*engine.Node, e
 	g.Elements = make(CytoElements, pg.Order()+pg.Size())
 	var i int
 	for node, df := range pg.Nodes() {
-		nodeid, found := ao.NodeToIndex(node)
-		if !found {
-			continue
-		}
+		nodeid := node.ID()
 		newnode := CytoFlatElement{
 			Group: "nodes",
 			Data: map[string]any{
@@ -131,11 +128,8 @@ func GenerateCytoscapeJS(ao *engine.IndexedGraph, pg graph.Graph[*engine.Node, e
 	}
 
 	pg.IterateEdges(func(source, target *engine.Node, edge engine.EdgeBitmap, flow int) bool {
-		sourceid, found1 := ao.NodeToIndex(source)
-		targetid, found2 := ao.NodeToIndex(target)
-		if !found1 || !found2 {
-			return true
-		}
+		sourceid := source.ID()
+		targetid := target.ID()
 		cytoedge := CytoFlatElement{
 			Group: "edges",
 			Data: MapStringInterface{
