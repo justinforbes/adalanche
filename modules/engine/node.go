@@ -603,9 +603,12 @@ func (o *Node) setNoLock(a Attribute, values AttributeValues) {
 				}
 			}
 
-			if o.HasAttr(DataSource) {
+			if datasourceValues, found := o.values.get(DataSource); found {
 				netbios, _, didsplit := strings.Cut(dlln, "\\")
-				datasource := o.OneAttrString(DataSource)
+				datasource := ""
+				if datasourceValues.Len() > 0 {
+					datasource = datasourceValues.First().String()
+				}
 				if didsplit &&
 					!strings.EqualFold(datasource, netbios) &&
 					!strings.HasPrefix(netbios, "NT-") &&
@@ -613,7 +616,7 @@ func (o *Node) setNoLock(a Attribute, values AttributeValues) {
 					!strings.HasSuffix(netbios, " NT") &&
 					netbios != "BUILTIN" &&
 					netbios != "IIS APPPOOL" {
-					ui.Warn().Msgf("Node DataSource and downlevel NETBIOS name conflict: %v / %v", value.String(), o.OneAttrString(DataSource))
+					ui.Warn().Msgf("Node DataSource and downlevel NETBIOS name conflict: %v / %v", value.String(), datasource)
 				}
 			}
 
