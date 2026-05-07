@@ -138,8 +138,16 @@ input[type="number"] {
   color: var(--bs-dark);
   background: var(--bs-primary);
 }
+.toastify {
+  position: relative;
+  padding: 0.9rem 2.2rem 0.9rem 0.9rem;
+}
 .toast-close {
-  padding-left: 0px;;
+  position: absolute;
+  top: 0.35rem;
+  right: 0.5rem;
+  padding: 0;
+  line-height: 1;
 }
 
 /* #options {

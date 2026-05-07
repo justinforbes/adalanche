@@ -466,7 +466,7 @@ function toast(title, contents, toastclass) {
   }
   Toastify({
     text: toastbody,
-    duration: 1000000,
+    duration: 10000,
     // avatar: icon,
     // destination: "https://github.com/apvarun/toastify-js",
     newWindow: true,
