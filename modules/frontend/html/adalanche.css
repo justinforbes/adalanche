@@ -139,8 +139,8 @@ input[type="number"] {
   background: var(--bs-primary);
 }
 .toastify {
-  position: relative;
   padding: 0.9rem 2.2rem 0.9rem 0.9rem;
+  transition: bottom 0.22s ease, top 0.22s ease;
 }
 .toast-close {
   position: absolute;

@@ -343,14 +343,14 @@ func (os *IndexedGraph) Contains(o *Node) bool {
 	return found
 }
 
-func (os *IndexedGraph) IndexToNode(id NodeIndex) (*Node, bool) {
+func (os *IndexedGraph) indexToNode(id NodeIndex) (*Node, bool) {
 	if len(os.nodes) <= int(id) {
 		return nil, false
 	}
 	return os.nodes[id], true
 }
 
-func (os *IndexedGraph) NodeToIndex(node *Node) (NodeIndex, bool) {
+func (os *IndexedGraph) nodeToIndex(node *Node) (NodeIndex, bool) {
 	if node.graphIndex != invalidNodeIndex {
 		return node.graphIndex, true
 	}

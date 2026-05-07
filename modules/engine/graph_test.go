@@ -18,11 +18,11 @@ func TestIndexedGraphAddAndLookup(t *testing.T) {
 		t.Fatalf("expected order 1, got %d", graph.Order())
 	}
 
-	index, found := graph.NodeToIndex(node)
+	index, found := graph.nodeToIndex(node)
 	if !found {
 		t.Fatal("expected node index")
 	}
-	if foundNode, ok := graph.IndexToNode(index); !ok || foundNode != node {
+	if foundNode, ok := graph.indexToNode(index); !ok || foundNode != node {
 		t.Fatal("expected index to resolve back to node")
 	}
 	if foundNode, ok := graph.LookupNodeByID(node.ID()); !ok || foundNode != node {

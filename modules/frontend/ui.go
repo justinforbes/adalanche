@@ -301,13 +301,6 @@ func AddDataEndpoints(ws *WebService) {
 		var o *engine.Node
 		var found bool
 		switch strings.ToLower(c.Param("locateby")) {
-		case "id":
-			index, err := strconv.ParseInt(c.Param("id"), 10, 64)
-			if err != nil {
-				c.String(500, "Error parsing index")
-				return
-			}
-			o, found = ws.SuperGraph.IndexToNode(engine.NodeIndex(index))
 		case "nodeid":
 			id, err := strconv.ParseInt(c.Param("id"), 10, 64)
 			if err != nil {
@@ -354,20 +347,6 @@ func AddDataEndpoints(ws *WebService) {
 		nodes := make([]*engine.Node, len(ids))
 
 		switch strings.ToLower(c.Param("locateby")) {
-		case "id":
-			for i, id := range ids {
-				thisId, err := strconv.ParseInt(id, 10, 64)
-				if err != nil {
-					c.String(500, "Error parsing ID")
-					return
-				}
-				o, found = ws.SuperGraph.IndexToNode(engine.NodeIndex(thisId))
-				if !found {
-					c.AbortWithStatus(404)
-					return
-				}
-				nodes[i] = o
-			}
 		case "nodeid":
 			for i, id := range ids {
 				thisId, err := strconv.ParseInt(id, 10, 64)

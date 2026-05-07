@@ -843,7 +843,7 @@ function exploreTree() {
     },
     async onNodeClick(node) {
       try {
-        const data = await fetchJSON("api/details/id/" + node.id);
+        const data = await fetchJSON("api/details/nodeid/" + node.id);
         const details = renderdetails(data);
         let windowname = "details_" + node.id;
         if (prefBool("ui.open.details.in.same.window", true)) {
